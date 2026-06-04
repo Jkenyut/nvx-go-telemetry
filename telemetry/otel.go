@@ -17,7 +17,6 @@ import (
 
 // Init sets up OpenTelemetry providers based on the provided options.
 // It returns a shutdown function that should be deferred to ensure data is flushed.
-// It also initializes the global zerolog logger for the application.
 func Init(ctx context.Context, opts ...Option) (func(context.Context) error, error) {
 	cfg := DefaultConfig()
 	for _, opt := range opts {
@@ -30,6 +29,8 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 	}
 
 	res, err := resource.New(ctx,
+		resource.WithFromEnv(), // Best practice: allow injecting OTEL_RESOURCE_ATTRIBUTES from env
+		resource.WithProcess(), // Best practice: include process information (PID, etc)
 		resource.WithAttributes(
 			semconv.ServiceName(cfg.ServiceName),
 		),
@@ -56,41 +57,52 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	if cfg.EnableTrace {
-		traceExporter, err := otlptracegrpc.New(ctx,
-			otlptracegrpc.WithEndpoint(cfg.Endpoint),
-			otlptracegrpc.WithInsecure(),
-		)
+		traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Endpoint)}
+		if cfg.Insecure {
+			traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+		}
+		traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 		if err != nil {
 			return shutdown, err
 		}
 		// Explicit batch processor limiters for safety
 		bsp := sdktrace.NewBatchSpanProcessor(
 			traceExporter,
-			sdktrace.WithMaxQueueSize(2048),
-			sdktrace.WithMaxExportBatchSize(512),
+			sdktrace.WithMaxQueueSize(8192),          // Production recommended queue size
+			sdktrace.WithMaxExportBatchSize(1024),    // Export larger batches
+			sdktrace.WithBatchTimeout(5*time.Second), // Explicit batch timeout
 		)
 		tracerProvider := sdktrace.NewTracerProvider(
 			// Best practice: ParentBased sampler respects upstream sampling decisions
-			sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())),
+			// Combined with TraceIDRatioBased to allow dropping traffic in production
+			sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.TraceRatio))),
 			sdktrace.WithResource(res),
 			sdktrace.WithSpanProcessor(bsp),
+			// Best practice: Explicit span limits to prevent OOM
+			sdktrace.WithRawSpanLimits(sdktrace.SpanLimits{
+				AttributeCountLimit: 128,
+				EventCountLimit:     128,
+				LinkCountLimit:      128,
+			}),
 		)
 		otel.SetTracerProvider(tracerProvider)
 		shutdownFuncs = append(shutdownFuncs, tracerProvider.Shutdown)
 	}
 
 	if cfg.EnableMetrics {
-		metricExporter, err := otlpmetricgrpc.New(ctx,
-			otlpmetricgrpc.WithEndpoint(cfg.Endpoint),
-			otlpmetricgrpc.WithInsecure(),
-		)
+		metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.Endpoint)}
+		if cfg.Insecure {
+			metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+		}
+		metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 		if err != nil {
 			return shutdown, err
 		}
 		// Explicit batch processor limiters for safety
 		metricReader := sdkmetric.NewPeriodicReader(
 			metricExporter,
-			sdkmetric.WithInterval(10*time.Second),
+			sdkmetric.WithInterval(30*time.Second), // Optimal interval for production
+			sdkmetric.WithTimeout(10*time.Second),  // Explicit export timeout
 		)
 		meterProvider := sdkmetric.NewMeterProvider(
 			sdkmetric.WithResource(res),
