@@ -1,14 +1,18 @@
 package telemetry
 
+import "github.com/rs/zerolog"
+
 // Config holds the OpenTelemetry configuration.
 type Config struct {
-	Enabled       bool    `yaml:"enabled" default:"true"`
-	Endpoint      string  `yaml:"endpoint" default:"localhost:4317"`
-	Insecure      bool    `yaml:"insecure" default:"true"`
-	ServiceName   string  `yaml:"service_name" default:"nvx-go-driver"`
-	EnableTrace   bool    `yaml:"enable_trace" default:"true"`
-	EnableMetrics bool    `yaml:"enable_metrics" default:"true"`
-	TraceRatio    float64 `yaml:"trace_ratio" default:"1.0"`
+	Enabled       bool              `yaml:"enabled" default:"true"`
+	Endpoint      string            `yaml:"endpoint" default:"localhost:4317"`
+	Insecure      bool              `yaml:"insecure" default:"true"`
+	Headers       map[string]string `yaml:"headers"` // API Keys / Auth tokens
+	ServiceName   string            `yaml:"service_name" default:"nvx-go-driver"`
+	EnableTrace   bool              `yaml:"enable_trace" default:"true"`
+	EnableMetrics bool              `yaml:"enable_metrics" default:"true"`
+	TraceRatio    float64           `yaml:"trace_ratio" default:"1.0"`
+	Logger        *zerolog.Logger   `yaml:"-"`
 }
 
 // Option defines a functional option for Config.
@@ -56,10 +60,24 @@ func WithInsecure(insecure bool) Option {
 	}
 }
 
+// WithHeaders sets the headers for the OTLP exporters.
+func WithHeaders(headers map[string]string) Option {
+	return func(c *Config) {
+		c.Headers = headers
+	}
+}
+
 // WithTraceRatio sets the sampling ratio for tracing (0.0 to 1.0).
 func WithTraceRatio(ratio float64) Option {
 	return func(c *Config) {
 		c.TraceRatio = ratio
+	}
+}
+
+// WithLogger sets a custom zerolog logger for internal errors.
+func WithLogger(logger *zerolog.Logger) Option {
+	return func(c *Config) {
+		c.Logger = logger
 	}
 }
 

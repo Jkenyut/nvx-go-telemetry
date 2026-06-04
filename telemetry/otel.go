@@ -3,8 +3,11 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"os"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/diode"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -28,6 +31,32 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		return func(context.Context) error { return nil }, nil
 	}
 
+	var shutdownFuncs []func(context.Context) error
+
+	var logger *zerolog.Logger
+	if cfg.Logger == nil {
+		// Fallback if no logger injected
+		w := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+		wr := diode.NewWriter(w, 1000, 10*time.Millisecond, func(_ int) {})
+		l := zerolog.New(wr).
+			With().
+			Timestamp().
+			Caller().
+			Logger()
+		logger = &l
+
+		shutdownFuncs = append(shutdownFuncs, func(context.Context) error {
+			_ = wr.Close()
+			return nil
+		})
+	} else {
+		logger = cfg.Logger
+	}
+
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.Error().Err(err).Msg("opentelemetry internal error")
+	}))
+
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(), // Best practice: allow injecting OTEL_RESOURCE_ATTRIBUTES from env
 		resource.WithProcess(), // Best practice: include process information (PID, etc)
@@ -39,7 +68,6 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		return nil, err
 	}
 
-	var shutdownFuncs []func(context.Context) error
 	shutdown := func(ctx context.Context) error {
 		var errs []error
 		for i := len(shutdownFuncs) - 1; i >= 0; i-- {
@@ -60,6 +88,9 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Endpoint)}
 		if cfg.Insecure {
 			traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+		}
+		if len(cfg.Headers) > 0 {
+			traceOpts = append(traceOpts, otlptracegrpc.WithHeaders(cfg.Headers))
 		}
 		traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 		if err != nil {
@@ -93,6 +124,9 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.Endpoint)}
 		if cfg.Insecure {
 			metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+		}
+		if len(cfg.Headers) > 0 {
+			metricOpts = append(metricOpts, otlpmetricgrpc.WithHeaders(cfg.Headers))
 		}
 		metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 		if err != nil {
