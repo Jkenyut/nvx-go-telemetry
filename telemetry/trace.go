@@ -9,19 +9,17 @@ import (
 )
 
 // Tracer returns the standard tracer for the application.
-// We use the ServiceName from config, but fallback to "nvx-go-telemetry" if needed.
 func Tracer(name string) trace.Tracer {
 	if name == "" {
-		name = "nvx-go-telemetry"
+		name = "unknown-tracer"
 	}
 	return otel.Tracer(name)
 }
 
 // Start creates a new span from the global tracer.
-func Start(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
-	// Usually, the tracer name is the package name creating the span,
-	// but for simplicity in a helper, we use a generic name.
-	return Tracer("").Start(ctx, spanName, opts...)
+// tracerName should ideally be the package name creating the span.
+func Start(ctx context.Context, tracerName, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	return Tracer(tracerName).Start(ctx, spanName, opts...)
 }
 
 // RecordError records an error into a span and sets its status to Error.
@@ -30,4 +28,22 @@ func RecordError(span trace.Span, err error) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
+}
+
+// TraceID extracts the TraceID from the context, or returns an empty string if no trace exists.
+func TraceID(ctx context.Context) string {
+	spanCtx := trace.SpanContextFromContext(ctx)
+	if spanCtx.HasTraceID() {
+		return spanCtx.TraceID().String()
+	}
+	return ""
+}
+
+// SpanID extracts the SpanID from the context, or returns an empty string if no span exists.
+func SpanID(ctx context.Context) string {
+	spanCtx := trace.SpanContextFromContext(ctx)
+	if spanCtx.HasSpanID() {
+		return spanCtx.SpanID().String()
+	}
+	return ""
 }

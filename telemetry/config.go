@@ -8,11 +8,13 @@ type Config struct {
 	Endpoint      string            `yaml:"endpoint" default:"localhost:4317"`
 	Insecure      bool              `yaml:"insecure" default:"true"`
 	Headers       map[string]string `yaml:"headers"` // API Keys / Auth tokens
-	ServiceName   string            `yaml:"service_name" default:"nvx-go-driver"`
-	EnableTrace   bool              `yaml:"enable_trace" default:"true"`
-	EnableMetrics bool              `yaml:"enable_metrics" default:"true"`
-	TraceRatio    float64           `yaml:"trace_ratio" default:"1.0"`
-	Logger        *zerolog.Logger   `yaml:"-"`
+	ServiceName    string            `yaml:"service_name" default:"nvx-go-telemetry"`
+	Environment    string            `yaml:"environment"`
+	ServiceVersion string            `yaml:"service_version"`
+	EnableTrace    bool              `yaml:"enable_trace" default:"true"`
+	EnableMetrics  bool              `yaml:"enable_metrics" default:"true"`
+	TraceRatio     float64           `yaml:"trace_ratio" default:"1.0"`
+	Logger         *zerolog.Logger   `yaml:"-"`
 }
 
 // Option defines a functional option for Config.
@@ -36,6 +38,20 @@ func WithEndpoint(endpoint string) Option {
 func WithServiceName(name string) Option {
 	return func(c *Config) {
 		c.ServiceName = name
+	}
+}
+
+// WithEnvironment sets the deployment environment (e.g. production, staging).
+func WithEnvironment(env string) Option {
+	return func(c *Config) {
+		c.Environment = env
+	}
+}
+
+// WithServiceVersion sets the service version.
+func WithServiceVersion(version string) Option {
+	return func(c *Config) {
+		c.ServiceVersion = version
 	}
 }
 

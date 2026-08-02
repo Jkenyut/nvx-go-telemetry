@@ -1,8 +1,6 @@
 package telemetry
 
 import (
-	"context"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -44,10 +42,3 @@ func (m *MetricManager) GetMeter() metric.Meter {
 	return m.Meter
 }
 
-// ContextWithAttributes is a helper to inject attributes into context for metric recording
-func ContextWithAttributes(ctx context.Context, attrs ...metric.MeasurementOption) context.Context {
-	// Not directly injecting into context for OTel metrics,
-	// typically attributes are passed at record time.
-	// This is a placeholder for context-bound attributes if needed.
-	return ctx
-}

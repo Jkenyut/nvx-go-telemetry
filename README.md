@@ -12,6 +12,7 @@
 - **Configurable**: Environment-driven or code-driven configuration options.
 - **Graceful Shutdown**: Built-in context handling and timeout for flushing telemetry data.
 - **Production Ready**: Uses standard `TraceContext` and `Baggage` propagators, optimal export batch limits, and built-in error handling via `zerolog`.
+- **Logging Helpers**: Easily extract `TraceID` and `SpanID` for context-aware logging.
 
 ## 📦 Installation
 
@@ -31,7 +32,6 @@ import (
 	"log"
 
 	"github.com/nvx-go/nvx-go-telemetry/telemetry"
-	"go.opentelemetry.io/otel"
 )
 
 func main() {
@@ -41,6 +41,8 @@ func main() {
 	shutdown, err := telemetry.Init(ctx,
 		telemetry.WithEnabled(true),
 		telemetry.WithServiceName("my-awesome-service"),
+		telemetry.WithEnvironment("production"),
+		telemetry.WithServiceVersion("v1.0.0"),
 		telemetry.WithEndpoint("localhost:4317"),
 		telemetry.WithInsecure(true),
 	)
@@ -54,12 +56,12 @@ func main() {
 		}
 	}()
 
-	// Now you can use global providers from go.opentelemetry.io/otel
-	tracer := otel.Tracer("my-tracer")
-	_, span := tracer.Start(ctx, "main.operation")
+	// Use the library's Start wrapper to create a span with a proper tracer name scope
+	ctx, span := telemetry.Start(ctx, "main-package", "main.operation")
 	defer span.End()
 	
-	// App logic here...
+	// Easily extract Trace IDs for logging
+	log.Printf("Started processing trace_id=%s", telemetry.TraceID(ctx))
 }
 ```
 
@@ -70,7 +72,9 @@ The library is highly configurable using functional options during initializatio
 | Option | Description | Default |
 | :--- | :--- | :--- |
 | `WithEnabled(bool)` | Master switch to enable/disable telemetry | `true` |
-| `WithServiceName(string)` | Sets the `service.name` resource attribute | `nvx-go-app` |
+| `WithServiceName(string)` | Sets the `service.name` resource attribute | `nvx-go-telemetry` |
+| `WithEnvironment(string)` | Sets the `deployment.environment` resource attribute | |
+| `WithServiceVersion(string)` | Sets the `service.version` resource attribute | |
 | `WithEndpoint(string)` | Sets the OTLP gRPC endpoint | `localhost:4317` |
 | `WithInsecure(bool)` | Disables TLS for the OTLP connection | `true` |
 | `WithHeaders(map[string]string)`| Sets custom headers (e.g., API Keys) for exporters | `nil` |
@@ -79,9 +83,16 @@ The library is highly configurable using functional options during initializatio
 | `WithTraceRatio(float64)` | Sampling ratio for tracing (0.0 to 1.0) | `1.0` |
 | `WithLogger(*zerolog.Logger)` | Sets a custom logger for OTEL internal errors | *Console Writer* |
 
+## 🛠️ Helpers
+
+The library provides convenient helpers to integrate traces with your logging systems (e.g., `zerolog`):
+
+- `telemetry.TraceID(ctx)`: Returns the current active `TraceID` as a string.
+- `telemetry.SpanID(ctx)`: Returns the current active `SpanID` as a string.
+
 ## 🤝 Best Practices Included
 
-- **Resource Attributes**: Automatically reads `OTEL_RESOURCE_ATTRIBUTES` from the environment and attaches process information.
+- **Resource Attributes**: Automatically injects `deployment.environment` and `service.version` alongside `OTEL_RESOURCE_ATTRIBUTES`.
 - **Propagation**: Globally registers `TraceContext` and `Baggage` propagators.
 - **Batching & Limits**: Sets explicit limits to prevent OOM errors and manages safe batching configurations.
 

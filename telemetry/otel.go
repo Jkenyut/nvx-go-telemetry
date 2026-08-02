@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/diode"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
@@ -57,12 +58,20 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		logger.Error().Err(err).Msg("opentelemetry internal error")
 	}))
 
+	attrs := []attribute.KeyValue{
+		semconv.ServiceNameKey.String(cfg.ServiceName),
+	}
+	if cfg.Environment != "" {
+		attrs = append(attrs, semconv.DeploymentEnvironmentKey.String(cfg.Environment))
+	}
+	if cfg.ServiceVersion != "" {
+		attrs = append(attrs, semconv.ServiceVersionKey.String(cfg.ServiceVersion))
+	}
+
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(), // Best practice: allow injecting OTEL_RESOURCE_ATTRIBUTES from env
 		resource.WithProcess(), // Best practice: include process information (PID, etc)
-		resource.WithAttributes(
-			semconv.ServiceName(cfg.ServiceName),
-		),
+		resource.WithAttributes(attrs...),
 	)
 	if err != nil {
 		return nil, err
