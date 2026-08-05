@@ -37,13 +37,40 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 	var logger *zerolog.Logger
 	if cfg.Logger == nil {
 		// Fallback if no logger injected
-		w := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-		wr := diode.NewWriter(w, 1000, 10*time.Millisecond, func(_ int) {})
+		// Check for environment-specific log level
+		level := zerolog.DebugLevel
+		isProd := cfg.Environment == "production" || cfg.Environment == "prod"
+		if isProd {
+			level = zerolog.InfoLevel
+		}
+		if envLevelStr := os.Getenv("LOG_LEVEL"); envLevelStr != "" {
+			if parsedLevel, err := zerolog.ParseLevel(envLevelStr); err == nil {
+				level = parsedLevel
+			}
+		}
+		zerolog.SetGlobalLevel(level)
+
+		var out zerolog.ConsoleWriter
+		if cfg.Environment == "production" || cfg.Environment == "prod" {
+			// JSON format for production
+			out = zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339, NoColor: true}
+		} else {
+			// Pretty format for development
+			out = zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339, NoColor: false}
+		}
+
+		wr := diode.NewWriter(out, 1000, 10*time.Millisecond, func(_ int) {})
 		l := zerolog.New(wr).
 			With().
 			Timestamp().
-			Caller().
+			Str("service", cfg.ServiceName).
 			Logger()
+
+		// Caller is expensive. Only enable it in non-production environments.
+		if !isProd {
+			l = l.With().Caller().Logger()
+		}
+
 		logger = &l
 
 		shutdownFuncs = append(shutdownFuncs, func(context.Context) error {
