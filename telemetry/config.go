@@ -1,20 +1,29 @@
 package telemetry
 
-import "github.com/rs/zerolog"
+import (
+	"errors"
+	"fmt"
+	"maps"
+	"strings"
+	"time"
+
+	"github.com/rs/zerolog"
+)
 
 // Config holds the OpenTelemetry configuration.
 type Config struct {
-	Enabled       bool              `yaml:"enabled" default:"true"`
-	Endpoint      string            `yaml:"endpoint" default:"localhost:4317"`
-	Insecure      bool              `yaml:"insecure" default:"true"`
-	Headers       map[string]string `yaml:"headers"` // API Keys / Auth tokens
-	ServiceName    string            `yaml:"service_name" default:"nvx-go-telemetry"`
-	Environment    string            `yaml:"environment"`
-	ServiceVersion string            `yaml:"service_version"`
-	EnableTrace    bool              `yaml:"enable_trace" default:"true"`
-	EnableMetrics  bool              `yaml:"enable_metrics" default:"true"`
-	TraceRatio     float64           `yaml:"trace_ratio" default:"1.0"`
-	Logger         *zerolog.Logger   `yaml:"-"`
+	Enabled         bool              `yaml:"enabled" default:"true"`
+	Endpoint        string            `yaml:"endpoint" default:"localhost:4317"`
+	Insecure        bool              `yaml:"insecure" default:"true"`
+	Headers         map[string]string `yaml:"headers"` // API Keys / Auth tokens
+	ServiceName     string            `yaml:"service_name" default:"nvx-go-telemetry"`
+	Environment     string            `yaml:"environment"`
+	ServiceVersion  string            `yaml:"service_version"`
+	EnableTrace     bool              `yaml:"enable_trace" default:"true"`
+	EnableMetrics   bool              `yaml:"enable_metrics" default:"true"`
+	TraceRatio      float64           `yaml:"trace_ratio" default:"1.0"`
+	ShutdownTimeout time.Duration     `yaml:"shutdown_timeout" default:"5s"`
+	Logger          *zerolog.Logger   `yaml:"-"`
 }
 
 // Option defines a functional option for Config.
@@ -77,9 +86,10 @@ func WithInsecure(insecure bool) Option {
 }
 
 // WithHeaders sets the headers for the OTLP exporters.
+// It creates a defensive copy of the headers map to prevent data races.
 func WithHeaders(headers map[string]string) Option {
 	return func(c *Config) {
-		c.Headers = headers
+		c.Headers = maps.Clone(headers)
 	}
 }
 
@@ -87,6 +97,13 @@ func WithHeaders(headers map[string]string) Option {
 func WithTraceRatio(ratio float64) Option {
 	return func(c *Config) {
 		c.TraceRatio = ratio
+	}
+}
+
+// WithShutdownTimeout sets the timeout duration for graceful shutdown.
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(c *Config) {
+		c.ShutdownTimeout = timeout
 	}
 }
 
@@ -100,12 +117,51 @@ func WithLogger(logger *zerolog.Logger) Option {
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Enabled:       true,
-		Endpoint:      "localhost:4317",
-		Insecure:      true,
-		ServiceName:   "nvx-go-app",
-		EnableTrace:   true,
-		EnableMetrics: true,
-		TraceRatio:    1.0,
+		Enabled:         true,
+		Endpoint:        "localhost:4317",
+		Insecure:        true,
+		ServiceName:     "nvx-go-telemetry",
+		EnableTrace:     true,
+		EnableMetrics:   true,
+		TraceRatio:      1.0,
+		ShutdownTimeout: 5 * time.Second,
 	}
+}
+
+// Validate checks whether the configuration is valid.
+func (c *Config) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Endpoint) == "" {
+		return errors.New("telemetry endpoint cannot be empty when enabled")
+	}
+	if strings.TrimSpace(c.ServiceName) == "" {
+		return errors.New("telemetry service name cannot be empty when enabled")
+	}
+	if c.TraceRatio < 0.0 || c.TraceRatio > 1.0 {
+		return fmt.Errorf("telemetry trace ratio must be between 0.0 and 1.0, got: %f", c.TraceRatio)
+	}
+	if c.ShutdownTimeout <= 0 {
+		c.ShutdownTimeout = 5 * time.Second
+	}
+	return nil
+}
+
+// String implements fmt.Stringer with sensitive headers redacted.
+func (c *Config) String() string {
+	if c == nil {
+		return "<nil>"
+	}
+	redactedHeaders := make(map[string]string, len(c.Headers))
+	for k := range c.Headers {
+		redactedHeaders[k] = "[REDACTED]"
+	}
+	return fmt.Sprintf("Config{Enabled:%t, Endpoint:%q, Insecure:%t, ServiceName:%q, Environment:%q, ServiceVersion:%q, EnableTrace:%t, EnableMetrics:%t, TraceRatio:%.2f, ShutdownTimeout:%s, Headers:%v}",
+		c.Enabled, c.Endpoint, c.Insecure, c.ServiceName, c.Environment, c.ServiceVersion, c.EnableTrace, c.EnableMetrics, c.TraceRatio, c.ShutdownTimeout, redactedHeaders)
+}
+
+// GoString implements fmt.GoStringer with sensitive headers redacted.
+func (c *Config) GoString() string {
+	return c.String()
 }

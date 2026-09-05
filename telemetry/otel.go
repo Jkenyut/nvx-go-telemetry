@@ -3,7 +3,11 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -16,15 +20,19 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 // Init sets up OpenTelemetry providers based on the provided options.
-// It returns a shutdown function that should be deferred to ensure data is flushed.
+// It returns an idempotent shutdown function that should be deferred to ensure data is flushed.
 func Init(ctx context.Context, opts ...Option) (func(context.Context) error, error) {
 	cfg := DefaultConfig()
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validating telemetry config: %w", err)
 	}
 
 	if !cfg.Enabled {
@@ -34,12 +42,18 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 
 	var shutdownFuncs []func(context.Context) error
 
+	cleanup := func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		for i := len(shutdownFuncs) - 1; i >= 0; i-- {
+			_ = shutdownFuncs[i](cleanupCtx)
+		}
+	}
+
 	var logger *zerolog.Logger
 	if cfg.Logger == nil {
-		// Fallback if no logger injected
-		// Check for environment-specific log level
+		isProd := strings.EqualFold(cfg.Environment, "production") || strings.EqualFold(cfg.Environment, "prod")
 		level := zerolog.DebugLevel
-		isProd := cfg.Environment == "production" || cfg.Environment == "prod"
 		if isProd {
 			level = zerolog.InfoLevel
 		}
@@ -48,19 +62,20 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 				level = parsedLevel
 			}
 		}
-		zerolog.SetGlobalLevel(level)
 
-		var out zerolog.ConsoleWriter
-		if cfg.Environment == "production" || cfg.Environment == "prod" {
-			// JSON format for production
-			out = zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339, NoColor: true}
+		var out io.Writer
+		if isProd {
+			// Direct stdout stream for high-performance structured JSON logging in production.
+			// Wrapped in nopCloserWriter so diode.Writer.Close() does not close os.Stdout.
+			out = nopCloserWriter{Writer: os.Stdout}
 		} else {
-			// Pretty format for development
+			// Pretty human-readable format for development
 			out = zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339, NoColor: false}
 		}
 
 		wr := diode.NewWriter(out, 1000, 10*time.Millisecond, func(_ int) {})
 		l := zerolog.New(wr).
+			Level(level).
 			With().
 			Timestamp().
 			Str("service", cfg.ServiceName).
@@ -96,25 +111,13 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 	}
 
 	res, err := resource.New(ctx,
-		resource.WithFromEnv(), // Best practice: allow injecting OTEL_RESOURCE_ATTRIBUTES from env
-		resource.WithProcess(), // Best practice: include process information (PID, etc)
+		resource.WithFromEnv(), // Allow injecting OTEL_RESOURCE_ATTRIBUTES from env
+		resource.WithProcess(), // Include process information (PID, etc)
 		resource.WithAttributes(attrs...),
 	)
 	if err != nil {
-		return nil, err
-	}
-
-	shutdown := func(ctx context.Context) error {
-		var errs []error
-		for i := len(shutdownFuncs) - 1; i >= 0; i-- {
-			// Add a timeout to shutdown to prevent hanging
-			shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			if err := shutdownFuncs[i](shutdownCtx); err != nil {
-				errs = append(errs, err)
-			}
-			cancel()
-		}
-		return errors.Join(errs...)
+		cleanup()
+		return nil, fmt.Errorf("creating otel resource: %w", err)
 	}
 
 	// Set global propagator to tracecontext and baggage (W3C standard).
@@ -130,8 +133,10 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		}
 		traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 		if err != nil {
-			return shutdown, err
+			cleanup()
+			return nil, fmt.Errorf("creating otlp trace exporter: %w", err)
 		}
+
 		// Explicit batch processor limiters for safety
 		bsp := sdktrace.NewBatchSpanProcessor(
 			traceExporter,
@@ -140,12 +145,11 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 			sdktrace.WithBatchTimeout(5*time.Second), // Explicit batch timeout
 		)
 		tracerProvider := sdktrace.NewTracerProvider(
-			// Best practice: ParentBased sampler respects upstream sampling decisions
-			// Combined with TraceIDRatioBased to allow dropping traffic in production
+			// ParentBased sampler respects upstream sampling decisions
 			sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.TraceRatio))),
 			sdktrace.WithResource(res),
 			sdktrace.WithSpanProcessor(bsp),
-			// Best practice: Explicit span limits to prevent OOM
+			// Explicit span limits to prevent OOM
 			sdktrace.WithRawSpanLimits(sdktrace.SpanLimits{
 				AttributeCountLimit: 128,
 				EventCountLimit:     128,
@@ -166,8 +170,10 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		}
 		metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 		if err != nil {
-			return shutdown, err
+			cleanup()
+			return nil, fmt.Errorf("creating otlp metric exporter: %w", err)
 		}
+
 		// Explicit batch processor limiters for safety
 		metricReader := sdkmetric.NewPeriodicReader(
 			metricExporter,
@@ -182,5 +188,39 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		shutdownFuncs = append(shutdownFuncs, meterProvider.Shutdown)
 	}
 
+	var (
+		shutdownOnce sync.Once
+		shutdownErr  error
+	)
+
+	shutdown := func(ctx context.Context) error {
+		shutdownOnce.Do(func() {
+			timeout := cfg.ShutdownTimeout
+			if timeout <= 0 {
+				timeout = 5 * time.Second
+			}
+
+			shutdownCtx := ctx
+			var cancel context.CancelFunc
+			if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+				shutdownCtx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+
+			var errs []error
+			for i := len(shutdownFuncs) - 1; i >= 0; i-- {
+				if err := shutdownFuncs[i](shutdownCtx); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			shutdownErr = errors.Join(errs...)
+		})
+		return shutdownErr
+	}
+
 	return shutdown, nil
+}
+
+type nopCloserWriter struct {
+	io.Writer
 }

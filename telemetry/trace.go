@@ -23,15 +23,20 @@ func Start(ctx context.Context, tracerName, spanName string, opts ...trace.SpanS
 }
 
 // RecordError records an error into a span and sets its status to Error.
+// It is safe to call with a nil span or nil error.
 func RecordError(span trace.Span, err error) {
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	if span == nil || err == nil {
+		return
 	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // TraceID extracts the TraceID from the context, or returns an empty string if no trace exists.
 func TraceID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
 	spanCtx := trace.SpanContextFromContext(ctx)
 	if spanCtx.HasTraceID() {
 		return spanCtx.TraceID().String()
@@ -41,6 +46,9 @@ func TraceID(ctx context.Context) string {
 
 // SpanID extracts the SpanID from the context, or returns an empty string if no span exists.
 func SpanID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
 	spanCtx := trace.SpanContextFromContext(ctx)
 	if spanCtx.HasSpanID() {
 		return spanCtx.SpanID().String()

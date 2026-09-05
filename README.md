@@ -81,7 +81,8 @@ The library is highly configurable using functional options during initializatio
 | `WithTraceEnabled(bool)` | Specifically enable/disable tracing | `true` |
 | `WithMetricsEnabled(bool)` | Specifically enable/disable metrics | `true` |
 | `WithTraceRatio(float64)` | Sampling ratio for tracing (0.0 to 1.0) | `1.0` |
-| `WithLogger(*zerolog.Logger)` | Sets a custom logger for OTEL internal errors | *Console Writer* |
+| `WithShutdownTimeout(time.Duration)` | Sets graceful shutdown timeout budget | `5s` |
+| `WithLogger(*zerolog.Logger)` | Sets a custom logger for OTEL internal errors | *Stdout JSON / Stderr Console* |
 
 ## 🛠️ Helpers
 
