@@ -4,14 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"strings"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/diode"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -50,54 +46,13 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		}
 	}
 
-	var logger *zerolog.Logger
-	if cfg.Logger == nil {
-		isProd := strings.EqualFold(cfg.Environment, "production") || strings.EqualFold(cfg.Environment, "prod")
-		level := zerolog.DebugLevel
-		if isProd {
-			level = zerolog.InfoLevel
-		}
-		if envLevelStr := os.Getenv("LOG_LEVEL"); envLevelStr != "" {
-			if parsedLevel, err := zerolog.ParseLevel(envLevelStr); err == nil {
-				level = parsedLevel
-			}
-		}
-
-		var out io.Writer
-		if isProd {
-			// Direct stdout stream for high-performance structured JSON logging in production.
-			// Wrapped in nopCloserWriter so diode.Writer.Close() does not close os.Stdout.
-			out = nopCloserWriter{Writer: os.Stdout}
-		} else {
-			// Pretty human-readable format for development
-			out = zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339, NoColor: false}
-		}
-
-		wr := diode.NewWriter(out, 1000, 10*time.Millisecond, func(_ int) {})
-		l := zerolog.New(wr).
-			Level(level).
-			With().
-			Timestamp().
-			Str("service", cfg.ServiceName).
-			Logger()
-
-		// Caller is expensive. Only enable it in non-production environments.
-		if !isProd {
-			l = l.With().Caller().Logger()
-		}
-
-		logger = &l
-
-		shutdownFuncs = append(shutdownFuncs, func(context.Context) error {
-			_ = wr.Close()
-			return nil
-		})
-	} else {
-		logger = cfg.Logger
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		logger.Error().Err(err).Msg("opentelemetry internal error")
+		logger.Error("opentelemetry internal error", "error", err)
 	}))
 
 	attrs := []attribute.KeyValue{
@@ -219,8 +174,4 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 	}
 
 	return shutdown, nil
-}
-
-type nopCloserWriter struct {
-	io.Writer
 }

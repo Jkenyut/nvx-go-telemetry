@@ -1,14 +1,13 @@
 package telemetry
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -16,77 +15,44 @@ import (
 func TestInit_Disabled(t *testing.T) {
 	shutdown, err := Init(context.Background(), WithEnabled(false))
 	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+		t.Fatalf("expected no error when disabled, got %v", err)
 	}
 	if shutdown == nil {
-		t.Fatalf("expected non-nil shutdown function")
+		t.Fatalf("expected non-nil shutdown function when disabled")
 	}
 
+	// Calling shutdown on disabled should not fail
 	if err := shutdown(context.Background()); err != nil {
-		t.Fatalf("expected no error on shutdown, got %v", err)
+		t.Fatalf("expected no error on shutdown when disabled, got %v", err)
 	}
 }
 
-func TestInit_Validation(t *testing.T) {
-	tests := []struct {
-		name    string
-		opts    []Option
-		wantErr bool
-	}{
-		{
-			name: "empty endpoint when enabled",
-			opts: []Option{
-				WithEnabled(true),
-				WithEndpoint(""),
-			},
-			wantErr: true,
-		},
-		{
-			name: "empty service name when enabled",
-			opts: []Option{
-				WithEnabled(true),
-				WithServiceName("   "),
-			},
-			wantErr: true,
-		},
-		{
-			name: "negative trace ratio",
-			opts: []Option{
-				WithEnabled(true),
-				WithTraceRatio(-0.1),
-			},
-			wantErr: true,
-		},
-		{
-			name: "trace ratio greater than 1",
-			opts: []Option{
-				WithEnabled(true),
-				WithTraceRatio(1.5),
-			},
-			wantErr: true,
-		},
-		{
-			name: "valid configuration",
-			opts: []Option{
-				WithEnabled(false),
-			},
-			wantErr: false,
-		},
+func TestInit_InvalidConfig(t *testing.T) {
+	// Empty endpoint
+	_, err := Init(context.Background(), WithEnabled(true), WithEndpoint(""))
+	if err == nil {
+		t.Fatalf("expected error for empty endpoint")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Init(context.Background(), tt.opts...)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("Init() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
+	// Empty service name
+	_, err = Init(context.Background(), WithEnabled(true), WithServiceName(""))
+	if err == nil {
+		t.Fatalf("expected error for empty service name")
+	}
+
+	// Invalid trace ratio
+	_, err = Init(context.Background(), WithEnabled(true), WithTraceRatio(1.5))
+	if err == nil {
+		t.Fatalf("expected error for trace ratio > 1.0")
+	}
+	_, err = Init(context.Background(), WithEnabled(true), WithTraceRatio(-0.1))
+	if err == nil {
+		t.Fatalf("expected error for trace ratio < 0.0")
 	}
 }
 
-func TestInit_Enabled_Shutdown_Idempotent(t *testing.T) {
-	var buf bytes.Buffer
-	testLogger := zerolog.New(&buf).With().Timestamp().Logger()
+func TestInit_Idempotency(t *testing.T) {
+	testLogger := slog.Default()
 
 	shutdown, err := Init(context.Background(),
 		WithEnabled(true),
@@ -100,7 +66,7 @@ func TestInit_Enabled_Shutdown_Idempotent(t *testing.T) {
 		WithMetricsEnabled(true),
 		WithTraceRatio(0.5),
 		WithShutdownTimeout(200*time.Millisecond),
-		WithLogger(&testLogger),
+		WithLogger(testLogger),
 	)
 	if err != nil {
 		t.Fatalf("expected no init error, got %v", err)
@@ -121,9 +87,8 @@ func TestInit_Enabled_Shutdown_Idempotent(t *testing.T) {
 	}
 }
 
-func TestInit_FallbackLogger_ProdAndDev(t *testing.T) {
-	// Test production branch (JSON writer to stdout)
-	shutdownProd, err := Init(context.Background(),
+func TestInit_FallbackLogger(t *testing.T) {
+	shutdown, err := Init(context.Background(),
 		WithEnabled(true),
 		WithEndpoint("localhost:4317"),
 		WithServiceName("prod-service"),
@@ -133,27 +98,10 @@ func TestInit_FallbackLogger_ProdAndDev(t *testing.T) {
 		WithMetricsEnabled(false),
 	)
 	if err != nil {
-		t.Fatalf("expected no init error for prod logger, got %v", err)
+		t.Fatalf("expected no init error for fallback logger, got %v", err)
 	}
-	if err := shutdownProd(context.Background()); err != nil {
-		t.Logf("shutdown prod: %v", err)
-	}
-
-	// Test development branch (ConsoleWriter to stderr)
-	shutdownDev, err := Init(context.Background(),
-		WithEnabled(true),
-		WithEndpoint("localhost:4317"),
-		WithServiceName("dev-service"),
-		WithEnvironment("development"),
-		WithShutdownTimeout(50*time.Millisecond),
-		WithTraceEnabled(false),
-		WithMetricsEnabled(false),
-	)
-	if err != nil {
-		t.Fatalf("expected no init error for dev logger, got %v", err)
-	}
-	if err := shutdownDev(context.Background()); err != nil {
-		t.Logf("shutdown dev: %v", err)
+	if err := shutdown(context.Background()); err != nil {
+		t.Logf("shutdown: %v", err)
 	}
 }
 
@@ -164,8 +112,7 @@ func TestConfig_Defaults_And_Options(t *testing.T) {
 	}
 
 	headers := map[string]string{"key": "val"}
-	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
+	logger := slog.Default()
 
 	opts := []Option{
 		WithEnabled(false),
@@ -179,7 +126,7 @@ func TestConfig_Defaults_And_Options(t *testing.T) {
 		WithHeaders(headers),
 		WithTraceRatio(0.25),
 		WithShutdownTimeout(3 * time.Second),
-		WithLogger(&logger),
+		WithLogger(logger),
 	}
 
 	for _, opt := range opts {
@@ -196,7 +143,7 @@ func TestConfig_Defaults_And_Options(t *testing.T) {
 		cfg.Insecure != false ||
 		cfg.TraceRatio != 0.25 ||
 		cfg.ShutdownTimeout != 3*time.Second ||
-		cfg.Logger != &logger {
+		cfg.Logger != logger {
 		t.Fatalf("options not applied correctly: %+v", cfg)
 	}
 }

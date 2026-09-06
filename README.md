@@ -11,7 +11,7 @@
 - **Zero-Boilerplate Setup**: Initialize tracing and metrics with a single function call.
 - **Configurable**: Environment-driven or code-driven configuration options.
 - **Graceful Shutdown**: Built-in context handling and timeout for flushing telemetry data.
-- **Production Ready**: Uses standard `TraceContext` and `Baggage` propagators, optimal export batch limits, and built-in error handling via `zerolog`.
+- **Production Ready**: Uses standard `TraceContext` and `Baggage` propagators, optimal export batch limits, and built-in error handling via standard library `log/slog`.
 - **Logging Helpers**: Easily extract `TraceID` and `SpanID` for context-aware logging.
 
 ## 📦 Installation
@@ -82,11 +82,11 @@ The library is highly configurable using functional options during initializatio
 | `WithMetricsEnabled(bool)` | Specifically enable/disable metrics | `true` |
 | `WithTraceRatio(float64)` | Sampling ratio for tracing (0.0 to 1.0) | `1.0` |
 | `WithShutdownTimeout(time.Duration)` | Sets graceful shutdown timeout budget | `5s` |
-| `WithLogger(*zerolog.Logger)` | Sets a custom logger for OTEL internal errors | *Stdout JSON / Stderr Console* |
+| `WithLogger(*slog.Logger)` | Sets a custom logger for OTEL internal errors | `slog.Default()` |
 
 ## 🛠️ Helpers
 
-The library provides convenient helpers to integrate traces with your logging systems (e.g., `zerolog`):
+The library provides convenient helpers to integrate traces with your logging systems (e.g., `slog`, `zerolog`):
 
 - `telemetry.TraceID(ctx)`: Returns the current active `TraceID` as a string.
 - `telemetry.SpanID(ctx)`: Returns the current active `SpanID` as a string.

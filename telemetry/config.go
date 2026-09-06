@@ -3,11 +3,10 @@ package telemetry
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strings"
 	"time"
-
-	"github.com/rs/zerolog"
 )
 
 // Config holds the OpenTelemetry configuration.
@@ -23,7 +22,7 @@ type Config struct {
 	EnableMetrics   bool              `yaml:"enable_metrics" default:"true"`
 	TraceRatio      float64           `yaml:"trace_ratio" default:"1.0"`
 	ShutdownTimeout time.Duration     `yaml:"shutdown_timeout" default:"5s"`
-	Logger          *zerolog.Logger   `yaml:"-"`
+	Logger          *slog.Logger      `yaml:"-"`
 }
 
 // Option defines a functional option for Config.
@@ -107,8 +106,8 @@ func WithShutdownTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithLogger sets a custom zerolog logger for internal errors.
-func WithLogger(logger *zerolog.Logger) Option {
+// WithLogger sets a custom slog logger for internal errors.
+func WithLogger(logger *slog.Logger) Option {
 	return func(c *Config) {
 		c.Logger = logger
 	}
