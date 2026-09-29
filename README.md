@@ -97,6 +97,55 @@ The library provides convenient helpers to integrate traces with your logging sy
 - **Propagation**: Globally registers `TraceContext` and `Baggage` propagators.
 - **Batching & Limits**: Sets explicit limits to prevent OOM errors and manages safe batching configurations.
 
+## 📐 Architecture & Data Flow
+
+`nvx-go-telemetry` provides an end-to-end observability pipeline with non-blocking in-memory buffers to keep your application fast and resilient:
+
+```mermaid
+flowchart TD
+    subgraph APP["Your Application (Host Service)"]
+        direction TB
+        Main["1. Initialization<br/><code>telemetry.Init(ctx, opts...)</code>"]
+        
+        subgraph RUNTIME["2. Runtime Execution"]
+            direction LR
+            Tr["Tracing<br/><code>telemetry.Start()</code>"]
+            Mt["Metrics<br/><code>MetricManager</code>"]
+            Lg["Logging<br/><code>Zerolog + TraceID</code>"]
+        end
+
+        Shutdown["4. Graceful Shutdown<br/><code>defer shutdown(ctx)</code>"]
+    end
+
+    subgraph ENGINE["nvx-go-telemetry Engine (In-Memory Buffers)"]
+        direction TB
+        BSP["BatchSpanProcessor<br/><i>(Queue: 8192, Batch: 1024)</i>"]
+        PR["PeriodicReader<br/><i>(Interval: 30s)</i>"]
+        Diode["Diode Ring Buffer<br/><i>(Non-blocking logger)</i>"]
+    end
+
+    subgraph BACKEND["Observability Backend"]
+        Collector["OTel Collector / Jaeger / Prometheus<br/><i>(gRPC: 4317)</i>"]
+        Stdout["Stdout / Stderr<br/><i>(Structured JSON Logs)</i>"]
+    end
+
+    %% Flow Connections
+    Main -->|Configure OTel & Providers| RUNTIME
+    Tr -->|Span Data| BSP
+    Mt -->|Metric Data| PR
+    Lg -->|Log Events| Diode
+
+    BSP -->|3. Async gRPC Export| Collector
+    PR -->|3. Async gRPC Export| Collector
+    Diode -->|Output Stream| Stdout
+
+    Shutdown -.->|Flush & Close Remaining Buffers| BSP
+    Shutdown -.->|Flush & Close Remaining Buffers| PR
+    Shutdown -.->|Flush & Close Remaining Buffers| Diode
+```
+
+Detailed technical sequence diagrams can be found in [docs/architecture/sequences.md](docs/architecture/sequences.md).
+
 ## 📄 License
 
 This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) file for details.
