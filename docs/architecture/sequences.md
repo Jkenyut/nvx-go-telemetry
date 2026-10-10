@@ -18,7 +18,7 @@ flowchart TD
             direction LR
             Tr["Tracing<br/><code>telemetry.Start()</code>"]
             Mt["Metrics<br/><code>MetricManager</code>"]
-            Lg["Logging<br/><code>Zerolog + TraceID</code>"]
+            Lg["Logging<br/><code>slog + TraceID</code>"]
         end
 
         Shutdown["4. Graceful Shutdown<br/><code>defer shutdown(ctx)</code>"]
@@ -27,35 +27,34 @@ flowchart TD
     subgraph ENGINE["nvx-go-telemetry Engine (In-Memory Buffers)"]
         direction TB
         BSP["BatchSpanProcessor<br/><i>(Queue: 8192, Batch: 1024)</i>"]
-        PR["PeriodicReader<br/><i>(Interval: 30s)</i>"]
-        Diode["Diode Ring Buffer<br/><i>(Non-blocking logger)</i>"]
+        PR["PeriodicReader<br/><i>(Interval: 30s, Timeout: 10s)</i>"]
+        ErrorHandler["OTel ErrorHandler<br/><i>(Logs via slog.Logger)</i>"]
     end
 
     subgraph BACKEND["Observability Backend"]
         Collector["OTel Collector / Jaeger / Prometheus<br/><i>(gRPC: 4317)</i>"]
-        Stdout["Stdout / Stderr<br/><i>(Structured JSON Logs)</i>"]
+        Stdout["Stdout / Stderr<br/><i>(Application / Error Logs)</i>"]
     end
 
     %% Flow Connections
     Main -->|Configure OTel & Providers| RUNTIME
     Tr -->|Span Data| BSP
     Mt -->|Metric Data| PR
-    Lg -->|Log Events| Diode
+    Lg -->|Contextual Logs| Stdout
+    ErrorHandler -->|Internal Errors| Stdout
 
     BSP -->|3. Async gRPC Export| Collector
     PR -->|3. Async gRPC Export| Collector
-    Diode -->|Output Stream| Stdout
 
-    Shutdown -.->|Flush & Close Remaining Buffers| BSP
-    Shutdown -.->|Flush & Close Remaining Buffers| PR
-    Shutdown -.->|Flush & Close Remaining Buffers| Diode
+    Shutdown -.->|Flush & Close Pending Spans| BSP
+    Shutdown -.->|Flush & Close Pending Metrics| PR
 ```
 
 ---
 
 ## 1. Telemetry Initialization & Graceful Shutdown
 
-This diagram illustrates how [`telemetry.Init`](../../telemetry/otel.go) configures options, sets up an asynchronous diode logger buffer, instantiates OTel gRPC exporters & providers (traces & metrics), registers global propagators, and executes LIFO graceful shutdown with timeout contexts.
+This diagram illustrates how [`telemetry.Init`](../../telemetry/otel.go) configures options, sets up the OpenTelemetry error handler using `slog`, instantiates OTel gRPC exporters & providers (traces & metrics), registers global propagators, and executes LIFO graceful shutdown with timeout contexts.
 
 ```mermaid
 sequenceDiagram
@@ -63,7 +62,7 @@ sequenceDiagram
     actor App as Caller App (main)
     participant Init as telemetry.Init()
     participant Cfg as Config
-    participant Diode as Diode Writer & Logger
+    participant Logger as slog.Logger
     participant Res as Resource Builder
     participant OTelGlobal as otel (Global Registry)
     participant TraceExp as OTLP gRPC Trace Exporter
@@ -80,24 +79,15 @@ sequenceDiagram
         Init-->>App: no-op shutdown func, nil
     end
 
-    alt cfg.Logger == nil
-        Init->>Diode: diode.NewWriter(1000 ring buffer, 10ms poll)
-        Init->>Diode: Setup Zerolog instance (prod: JSON / dev: Console)
-        Note over Diode: Append logger.Close() to shutdownFuncs
-    end
-
-    Init->>OTelGlobal: SetErrorHandler(logger callback)
+    Init->>Logger: Resolve cfg.Logger (defaults to slog.Default())
     Init->>Res: resource.New(WithFromEnv, WithProcess, WithAttributes)
-    Res-->>Init: Resource instance
-
-    Init->>OTelGlobal: SetTextMapPropagator(TraceContext + Baggage)
+    Res-->>Init: Resource instance (warns on ErrPartialResource)
 
     opt cfg.EnableTrace == true
         Init->>TraceExp: otlptracegrpc.New(ctx, Endpoint, Insecure, Headers)
         TraceExp-->>Init: traceExporter
         Init->>BSP: NewBatchSpanProcessor(traceExporter, Queue: 8192, Batch: 1024, Timeout: 5s)
         Init->>TP: NewTracerProvider(ParentBased+Ratio, Resource, BSP, SpanLimits)
-        Init->>OTelGlobal: SetTracerProvider(tracerProvider)
         Note over Init: Append tracerProvider.Shutdown to shutdownFuncs
     end
 
@@ -106,8 +96,17 @@ sequenceDiagram
         MetricExp-->>Init: metricExporter
         Init->>PeriodicReader: NewPeriodicReader(metricExporter, Interval: 30s, Timeout: 10s)
         Init->>MP: NewMeterProvider(Resource, PeriodicReader)
-        Init->>OTelGlobal: SetMeterProvider(meterProvider)
         Note over Init: Append meterProvider.Shutdown to shutdownFuncs
+    end
+
+    Note over Init,OTelGlobal: Atomic Registration (only when all providers succeed)
+    Init->>OTelGlobal: SetErrorHandler(logger callback)
+    Init->>OTelGlobal: SetTextMapPropagator(TraceContext + Baggage)
+    opt TracerProvider created
+        Init->>OTelGlobal: SetTracerProvider(tracerProvider)
+    end
+    opt MeterProvider created
+        Init->>OTelGlobal: SetMeterProvider(meterProvider)
     end
 
     Init-->>App: shutdown(context.Context) func, nil
@@ -118,19 +117,15 @@ sequenceDiagram
     Note over App: Execute registered shutdown handlers in reverse order (LIFO)
 
     opt MeterProvider active
-        App->>MP: Shutdown(5s timeout ctx)
+        App->>MP: Shutdown(shutdownCtx with Timeout)
         MP->>PeriodicReader: Shutdown & Flush pending metrics
         PeriodicReader->>MetricExp: Export remaining metrics
     end
 
     opt TracerProvider active
-        App->>TP: Shutdown(5s timeout ctx)
+        App->>TP: Shutdown(shutdownCtx with Timeout)
         TP->>BSP: Shutdown & Flush pending spans
         BSP->>TraceExp: Export remaining batches
-    end
-
-    opt Custom Diode Logger active
-        App->>Diode: Close writer ring buffer
     end
 
     App-->>App: Graceful shutdown completed (errors.Join)
@@ -149,7 +144,7 @@ sequenceDiagram
     participant TraceUtil as telemetry (trace.go)
     participant OTelTracer as otel.Tracer
     participant Span as trace.Span
-    participant DiodeLog as Zerolog Logger
+    participant AppLogger as slog.Logger
     participant BSP as BatchSpanProcessor
 
     Handler->>TraceUtil: Start(ctx, "orders", "ProcessPayment")
@@ -160,7 +155,7 @@ sequenceDiagram
     Handler->>TraceUtil: TraceID(spanCtx)
     TraceUtil-->>Handler: "4bf92f3577b34da6a3ce929d0e0e4736"
 
-    Handler->>DiodeLog: logger.Info().Str("trace_id", traceID).Msg("Processing payment...")
+    Handler->>AppLogger: logger.InfoContext(spanCtx, "Processing payment...", "trace_id", traceID)
 
     alt Operation Fails
         Handler->>TraceUtil: RecordError(span, err)
@@ -170,7 +165,7 @@ sequenceDiagram
 
     Handler->>Span: End()
     Span->>BSP: OnEnd(spanReadOnly)
-    Note over BSP: Enqueue span into ring buffer (max 8192) for batch export
+    Note over BSP: Enqueue span into queue (max 8192) for batch export
 ```
 
 ---

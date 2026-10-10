@@ -2,6 +2,8 @@ package telemetry
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -27,12 +29,19 @@ func (m *MetricManager) RegisterCounter(name, description string, opts ...metric
 	if m == nil || m.Meter == nil {
 		return nil, errors.New("metric manager is uninitialized")
 	}
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("metric name cannot be empty")
+	}
 	allOpts := make([]metric.Int64CounterOption, 0, len(opts)+1)
 	if description != "" {
 		allOpts = append(allOpts, metric.WithDescription(description))
 	}
 	allOpts = append(allOpts, opts...)
-	return m.Int64Counter(name, allOpts...)
+	c, err := m.Int64Counter(name, allOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("registering counter %q: %w", name, err)
+	}
+	return c, nil
 }
 
 // RegisterUpDownCounter creates a new integer up-down counter.
@@ -40,18 +49,28 @@ func (m *MetricManager) RegisterUpDownCounter(name, description string, opts ...
 	if m == nil || m.Meter == nil {
 		return nil, errors.New("metric manager is uninitialized")
 	}
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("metric name cannot be empty")
+	}
 	allOpts := make([]metric.Int64UpDownCounterOption, 0, len(opts)+1)
 	if description != "" {
 		allOpts = append(allOpts, metric.WithDescription(description))
 	}
 	allOpts = append(allOpts, opts...)
-	return m.Int64UpDownCounter(name, allOpts...)
+	c, err := m.Int64UpDownCounter(name, allOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("registering up-down counter %q: %w", name, err)
+	}
+	return c, nil
 }
 
 // RegisterHistogram creates a new float64 histogram.
 func (m *MetricManager) RegisterHistogram(name, description, unit string, opts ...metric.Float64HistogramOption) (metric.Float64Histogram, error) {
 	if m == nil || m.Meter == nil {
 		return nil, errors.New("metric manager is uninitialized")
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("metric name cannot be empty")
 	}
 	allOpts := make([]metric.Float64HistogramOption, 0, len(opts)+2)
 	if description != "" {
@@ -61,13 +80,20 @@ func (m *MetricManager) RegisterHistogram(name, description, unit string, opts .
 		allOpts = append(allOpts, metric.WithUnit(unit))
 	}
 	allOpts = append(allOpts, opts...)
-	return m.Float64Histogram(name, allOpts...)
+	h, err := m.Float64Histogram(name, allOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("registering histogram %q: %w", name, err)
+	}
+	return h, nil
 }
 
 // MeasureFunc registers a callback to record an observable gauge.
 func (m *MetricManager) MeasureFunc(name, description string, callback metric.Int64Callback, opts ...metric.Int64ObservableGaugeOption) (metric.Int64ObservableGauge, error) {
 	if m == nil || m.Meter == nil {
 		return nil, errors.New("metric manager is uninitialized")
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("metric name cannot be empty")
 	}
 	allOpts := make([]metric.Int64ObservableGaugeOption, 0, len(opts)+2)
 	if description != "" {
@@ -77,7 +103,11 @@ func (m *MetricManager) MeasureFunc(name, description string, callback metric.In
 		allOpts = append(allOpts, metric.WithInt64Callback(callback))
 	}
 	allOpts = append(allOpts, opts...)
-	return m.Int64ObservableGauge(name, allOpts...)
+	g, err := m.Int64ObservableGauge(name, allOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("registering observable gauge %q: %w", name, err)
+	}
+	return g, nil
 }
 
 // GetMeter returns the underlying OpenTelemetry Meter.

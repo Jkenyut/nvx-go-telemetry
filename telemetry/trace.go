@@ -18,7 +18,11 @@ func Tracer(name string) trace.Tracer {
 
 // Start creates a new span from the global tracer.
 // tracerName should ideally be the package name creating the span.
+// It is safe to call with a nil context.
 func Start(ctx context.Context, tracerName, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return Tracer(tracerName).Start(ctx, spanName, opts...)
 }
 

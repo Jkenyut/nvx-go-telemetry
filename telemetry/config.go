@@ -129,11 +129,17 @@ func DefaultConfig() *Config {
 
 // Validate checks whether the configuration is valid.
 func (c *Config) Validate() error {
+	if c == nil {
+		return errors.New("telemetry config is nil")
+	}
 	if !c.Enabled {
 		return nil
 	}
 	if strings.TrimSpace(c.Endpoint) == "" {
 		return errors.New("telemetry endpoint cannot be empty when enabled")
+	}
+	if strings.Contains(c.Endpoint, "://") {
+		return fmt.Errorf("telemetry endpoint %q must not contain a URL scheme (e.g. http:// or https://)", c.Endpoint)
 	}
 	if strings.TrimSpace(c.ServiceName) == "" {
 		return errors.New("telemetry service name cannot be empty when enabled")

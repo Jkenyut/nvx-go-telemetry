@@ -10,6 +10,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func TestInit_Disabled(t *testing.T) {
@@ -28,10 +29,22 @@ func TestInit_Disabled(t *testing.T) {
 }
 
 func TestInit_InvalidConfig(t *testing.T) {
+	// Nil config validation
+	var nilCfg *Config
+	if err := nilCfg.Validate(); err == nil {
+		t.Fatalf("expected error for nil config Validate()")
+	}
+
 	// Empty endpoint
 	_, err := Init(context.Background(), WithEnabled(true), WithEndpoint(""))
 	if err == nil {
 		t.Fatalf("expected error for empty endpoint")
+	}
+
+	// Endpoint with scheme
+	_, err = Init(context.Background(), WithEnabled(true), WithEndpoint("http://localhost:4317"))
+	if err == nil || !strings.Contains(err.Error(), "must not contain a URL scheme") {
+		t.Fatalf("expected URL scheme rejection error, got: %v", err)
 	}
 
 	// Empty service name
@@ -48,6 +61,16 @@ func TestInit_InvalidConfig(t *testing.T) {
 	_, err = Init(context.Background(), WithEnabled(true), WithTraceRatio(-0.1))
 	if err == nil {
 		t.Fatalf("expected error for trace ratio < 0.0")
+	}
+
+	// Shutdown timeout default reset on zero or negative
+	cfg := DefaultConfig()
+	cfg.ShutdownTimeout = -1 * time.Second
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+	if cfg.ShutdownTimeout != 5*time.Second {
+		t.Fatalf("expected reset to 5s, got %v", cfg.ShutdownTimeout)
 	}
 }
 
@@ -85,10 +108,17 @@ func TestInit_Idempotency(t *testing.T) {
 	if err1 != err2 {
 		t.Fatalf("expected idempotent shutdown error %v, got %v", err1, err2)
 	}
+
+	// Third shutdown call with nil context (must be nil-safe and idempotent)
+	err3 := shutdown(nil)
+	if err1 != err3 {
+		t.Fatalf("expected nil-context shutdown to return idempotent error %v, got %v", err1, err3)
+	}
 }
 
 func TestInit_FallbackLogger(t *testing.T) {
-	shutdown, err := Init(context.Background(),
+	// Call Init with nil context to ensure fallback to context.Background()
+	shutdown, err := Init(nil,
 		WithEnabled(true),
 		WithEndpoint("localhost:4317"),
 		WithServiceName("prod-service"),
@@ -211,6 +241,13 @@ func TestTrace_Operations(t *testing.T) {
 	}
 	defer span.End()
 
+	// Safe to call Start with nil context
+	nilCtx, nilSpan := Start(nil, "nil-ctx-tracer", "nil-span")
+	if nilCtx == nil || nilSpan == nil {
+		t.Fatalf("expected valid context and span when Start called with nil context")
+	}
+	nilSpan.End()
+
 	// 3. RecordError with nil and valid error
 	RecordError(nil, errors.New("span is nil")) // should not panic
 	RecordError(span, nil)                      // should not panic
@@ -236,6 +273,22 @@ func TestTrace_Operations(t *testing.T) {
 	}
 	if SpanID(emptyCtx) != "" {
 		t.Fatalf("expected empty SpanID for empty context")
+	}
+
+	// 5. Test active recording TracerProvider to verify non-empty TraceID and SpanID
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	activeTracer := tp.Tracer("active-tracer")
+	activeCtx, activeSpan := activeTracer.Start(context.Background(), "sample-span")
+	defer activeSpan.End()
+
+	activeTID := TraceID(activeCtx)
+	activeSID := SpanID(activeCtx)
+	if len(activeTID) != 32 {
+		t.Fatalf("expected 32-hex trace ID, got %q", activeTID)
+	}
+	if len(activeSID) != 16 {
+		t.Fatalf("expected 16-hex span ID, got %q", activeSID)
 	}
 }
 
@@ -300,5 +353,19 @@ func TestMetrics_Operations(t *testing.T) {
 	}
 	if _, err := nilMM.MeasureFunc("g", "d", nil); err == nil {
 		t.Fatalf("expected error when measuring func on nil MetricManager")
+	}
+
+	// 7. Empty name validation
+	if _, err := mm.RegisterCounter("", "empty name"); err == nil {
+		t.Fatalf("expected error registering counter with empty name")
+	}
+	if _, err := mm.RegisterUpDownCounter("", "empty name"); err == nil {
+		t.Fatalf("expected error registering up-down counter with empty name")
+	}
+	if _, err := mm.RegisterHistogram("", "empty name", "s"); err == nil {
+		t.Fatalf("expected error registering histogram with empty name")
+	}
+	if _, err := mm.MeasureFunc("", "empty name", nil); err == nil {
+		t.Fatalf("expected error registering gauge with empty name")
 	}
 }

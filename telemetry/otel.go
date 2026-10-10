@@ -22,6 +22,10 @@ import (
 // Init sets up OpenTelemetry providers based on the provided options.
 // It returns an idempotent shutdown function that should be deferred to ensure data is flushed.
 func Init(ctx context.Context, opts ...Option) (func(context.Context) error, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	cfg := DefaultConfig()
 	for _, opt := range opts {
 		opt(cfg)
@@ -51,10 +55,6 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		logger = slog.Default()
 	}
 
-	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		logger.Error("opentelemetry internal error", "error", err)
-	}))
-
 	attrs := []attribute.KeyValue{
 		semconv.ServiceNameKey.String(cfg.ServiceName),
 	}
@@ -71,12 +71,18 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		resource.WithAttributes(attrs...),
 	)
 	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("creating otel resource: %w", err)
+		if errors.Is(err, resource.ErrPartialResource) {
+			logger.Warn("partial otel resource constructed", "error", err)
+		} else {
+			cleanup()
+			return nil, fmt.Errorf("creating otel resource: %w", err)
+		}
 	}
 
-	// Set global propagator to tracecontext and baggage (W3C standard).
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	var (
+		tracerProvider *sdktrace.TracerProvider
+		meterProvider  *sdkmetric.MeterProvider
+	)
 
 	if cfg.EnableTrace {
 		traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Endpoint)}
@@ -99,7 +105,7 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 			sdktrace.WithMaxExportBatchSize(1024),    // Export larger batches
 			sdktrace.WithBatchTimeout(5*time.Second), // Explicit batch timeout
 		)
-		tracerProvider := sdktrace.NewTracerProvider(
+		tracerProvider = sdktrace.NewTracerProvider(
 			// ParentBased sampler respects upstream sampling decisions
 			sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.TraceRatio))),
 			sdktrace.WithResource(res),
@@ -111,7 +117,6 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 				LinkCountLimit:      128,
 			}),
 		)
-		otel.SetTracerProvider(tracerProvider)
 		shutdownFuncs = append(shutdownFuncs, tracerProvider.Shutdown)
 	}
 
@@ -135,12 +140,26 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 			sdkmetric.WithInterval(30*time.Second), // Optimal interval for production
 			sdkmetric.WithTimeout(10*time.Second),  // Explicit export timeout
 		)
-		meterProvider := sdkmetric.NewMeterProvider(
+		meterProvider = sdkmetric.NewMeterProvider(
 			sdkmetric.WithResource(res),
 			sdkmetric.WithReader(metricReader),
 		)
-		otel.SetMeterProvider(meterProvider)
 		shutdownFuncs = append(shutdownFuncs, meterProvider.Shutdown)
+	}
+
+	// Register global handlers only after all exporters and providers are successfully constructed
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.Error("opentelemetry internal error", "error", err)
+	}))
+
+	// Set global propagator to tracecontext and baggage (W3C standard).
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+
+	if tracerProvider != nil {
+		otel.SetTracerProvider(tracerProvider)
+	}
+	if meterProvider != nil {
+		otel.SetMeterProvider(meterProvider)
 	}
 
 	var (
@@ -150,6 +169,10 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 
 	shutdown := func(ctx context.Context) error {
 		shutdownOnce.Do(func() {
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
 			timeout := cfg.ShutdownTimeout
 			if timeout <= 0 {
 				timeout = 5 * time.Second

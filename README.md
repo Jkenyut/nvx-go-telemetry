@@ -62,6 +62,13 @@ func main() {
 	
 	// Easily extract Trace IDs for logging
 	log.Printf("Started processing trace_id=%s", telemetry.TraceID(ctx))
+
+	// Register and record metrics with MetricManager
+	mm := telemetry.NewMetricManager("main-package")
+	counter, err := mm.RegisterCounter("requests_total", "Total requests processed")
+	if err == nil {
+		counter.Add(ctx, 1)
+	}
 }
 ```
 
@@ -111,7 +118,7 @@ flowchart TD
             direction LR
             Tr["Tracing<br/><code>telemetry.Start()</code>"]
             Mt["Metrics<br/><code>MetricManager</code>"]
-            Lg["Logging<br/><code>Zerolog + TraceID</code>"]
+            Lg["Logging<br/><code>slog + TraceID</code>"]
         end
 
         Shutdown["4. Graceful Shutdown<br/><code>defer shutdown(ctx)</code>"]
@@ -120,28 +127,27 @@ flowchart TD
     subgraph ENGINE["nvx-go-telemetry Engine (In-Memory Buffers)"]
         direction TB
         BSP["BatchSpanProcessor<br/><i>(Queue: 8192, Batch: 1024)</i>"]
-        PR["PeriodicReader<br/><i>(Interval: 30s)</i>"]
-        Diode["Diode Ring Buffer<br/><i>(Non-blocking logger)</i>"]
+        PR["PeriodicReader<br/><i>(Interval: 30s, Timeout: 10s)</i>"]
+        ErrorHandler["OTel ErrorHandler<br/><i>(Logs via slog.Logger)</i>"]
     end
 
     subgraph BACKEND["Observability Backend"]
         Collector["OTel Collector / Jaeger / Prometheus<br/><i>(gRPC: 4317)</i>"]
-        Stdout["Stdout / Stderr<br/><i>(Structured JSON Logs)</i>"]
+        Stdout["Stdout / Stderr<br/><i>(Application / Error Logs)</i>"]
     end
 
     %% Flow Connections
     Main -->|Configure OTel & Providers| RUNTIME
     Tr -->|Span Data| BSP
     Mt -->|Metric Data| PR
-    Lg -->|Log Events| Diode
+    Lg -->|Contextual Logs| Stdout
+    ErrorHandler -->|Internal Errors| Stdout
 
     BSP -->|3. Async gRPC Export| Collector
     PR -->|3. Async gRPC Export| Collector
-    Diode -->|Output Stream| Stdout
 
-    Shutdown -.->|Flush & Close Remaining Buffers| BSP
-    Shutdown -.->|Flush & Close Remaining Buffers| PR
-    Shutdown -.->|Flush & Close Remaining Buffers| Diode
+    Shutdown -.->|Flush & Close Pending Spans| BSP
+    Shutdown -.->|Flush & Close Pending Metrics| PR
 ```
 
 Detailed technical sequence diagrams can be found in [docs/architecture/sequences.md](docs/architecture/sequences.md).
