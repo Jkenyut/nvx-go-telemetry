@@ -1,4 +1,4 @@
-module github.com/Jkenyut/nvx-go-telemetry.git
+module github.com/Jkenyut/nvx-go-telemetry
 
 go 1.26.4
 
