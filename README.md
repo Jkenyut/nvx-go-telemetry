@@ -3,67 +3,69 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/Jkenyut/nvx-go-telemetry.svg)](https://pkg.go.dev/github.com/Jkenyut/nvx-go-telemetry)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Jkenyut/nvx-go-telemetry)](https://goreportcard.com/report/github.com/Jkenyut/nvx-go-telemetry)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Coverage Status](https://img.shields.io/badge/coverage-85%25-brightgreen.svg)](#verification-testing--health-check)
+[![Coverage Status](https://img.shields.io/badge/coverage-85%25-brightgreen.svg)](#8-verification-testing-and-health-check)
 
-The `nvx-go-telemetry` module provides production-ready OpenTelemetry instrumentation for Go applications. It configures trace and metric providers with high-throughput OTLP gRPC exporters. The library propagates W3C distributed trace context across HTTP APIs and message brokers.
+The `nvx-go-telemetry` module provides OpenTelemetry instrumentation for Go applications. It configures trace and metric providers with high-throughput OTLP gRPC exporters. The library propagates W3C distributed trace context across HTTP APIs and message brokers.
 
 ---
 
-## System Architecture & Data Flows
+## 1. System Architecture and Data Flows
 
 The system architecture integrates core application services with downstream observability collectors.
 
-### System Topology & Component Architecture
+### 1.1 System Topology and Component Architecture
 
 ```mermaid
 flowchart TD
-    subgraph InboundTraffic["Inbound Traffic"]
-        Client["HTTP Client / Browser"]
-        Producer["Message Producer / Webhook"]
+    subgraph INBOUND["Inbound Boundary"]
+        Client["HTTP Client or Browser"]
+        Producer["Message Producer or Webhook"]
     end
 
-    subgraph EdgeGateway["Edge Gateway Layer"]
-        Gateway["Reverse Proxy / API Gateway"]
+    subgraph EDGE["Edge Gateway Layer"]
+        Gateway["Reverse Proxy or API Gateway"]
     end
 
-    subgraph CoreServiceBoundary["Core Service Boundary"]
-        AppHandler["HTTP Handler / Inbound Adapter"]
+    subgraph CORE["Core Service Boundary"]
+        AppHandler["Inbound Adapter (HTTP Handler)"]
         TelemetryCore["nvx-go-telemetry Core Engine"]
         DomainService["Core Domain Service"]
         AsyncWorker["Asynchronous Queue Worker"]
     end
 
-    subgraph MessagingPersistence["Persistence and Messaging"]
-        Broker["Message Broker (RabbitMQ / Kafka)"]
+    subgraph STORAGE["Persistence and Messaging"]
+        Broker["Message Broker (RabbitMQ)"]
         Database[("Relational Database (PostgreSQL)")]
         Cache[("In-Memory Cache (Redis)")]
     end
 
-    subgraph ObservabilityLayer["Observability Infrastructure"]
+    subgraph OBSERVABILITY["Observability Infrastructure"]
         OtelCollector["OpenTelemetry Collector (:4317 gRPC)"]
-        TraceBackend["Distributed Tracing Engine (Jaeger / Tempo)"]
-        MetricBackend["Time Series Database (Prometheus / Mimir)"]
+        TraceBackend["Distributed Tracing Engine (Jaeger)"]
+        MetricBackend["Time Series Database (Prometheus)"]
     end
 
-    Client -->|HTTP Request with W3C Header| Gateway
-    Gateway -->|Forward HTTP Request| AppHandler
-    AppHandler -->|Extract Context| TelemetryCore
-    AppHandler -->|Execute Domain Logic| DomainService
-    DomainService -->|Read and Write Cache| Cache
-    DomainService -->|Execute SQL Query| Database
-    DomainService -->|Inject Context and Publish| Broker
-    Broker -->|Deliver Message| AsyncWorker
-    AsyncWorker -->|Extract Context and Process| TelemetryCore
+    Client -->|"Send HTTP request with W3C header"| Gateway
+    Gateway -->|"Forward HTTP request"| AppHandler
+    AppHandler -->|"Extract context"| TelemetryCore
+    AppHandler -->|"Execute domain logic"| DomainService
+    DomainService -->|"Read and write cache"| Cache
+    DomainService -->|"Execute database query"| Database
+    DomainService -->|"Inject context and publish"| Broker
+    Broker -->|"Deliver message"| AsyncWorker
+    AsyncWorker -->|"Extract context and process"| TelemetryCore
 
-    TelemetryCore -->|Export Spans via OTLP gRPC| OtelCollector
-    TelemetryCore -->|Export Metrics via OTLP gRPC| OtelCollector
-    OtelCollector -->|Export Trace Records| TraceBackend
-    OtelCollector -->|Export Metric Records| MetricBackend
+    TelemetryCore -->|"Export spans via OTLP gRPC"| OtelCollector
+    TelemetryCore -->|"Export metrics via OTLP gRPC"| OtelCollector
+    OtelCollector -->|"Forward trace records"| TraceBackend
+    OtelCollector -->|"Forward metric records"| MetricBackend
 ```
 
-The application core extracts trace context from inbound HTTP headers. It injects W3C context headers into outbound message broker payloads. Batch processors flush telemetry spans and metric data points to the OpenTelemetry Collector via gRPC.
+The application core extracts trace context from inbound HTTP headers. It injects W3C context headers into outbound message broker payloads. Batch processors flush telemetry spans and metric data points to the OpenTelemetry Collector via gRPC connections.
 
-### Core Transaction Sequence
+---
+
+### 1.2 Core Transaction Workflow
 
 ```mermaid
 sequenceDiagram
@@ -76,30 +78,30 @@ sequenceDiagram
     participant Queue as RabbitMQ Broker
     participant Collector as OTLP Collector
 
-    User->>Gateway: POST /api/v1/orders (W3C traceparent header)
+    User->>Gateway: POST /api/v1/orders (traceparent header)
     Gateway->>Handler: Forward HTTP request
     Handler->>Telemetry: ExtractHTTP(ctx, req.Header)
     Telemetry-->>Handler: Return active context with trace ID
     Handler->>Telemetry: Start(ctx, "orders", "create_order")
-    Telemetry-->>Handler: Return span and context
+    Telemetry-->>Handler: Return span and child context
 
     Handler->>DB: BEGIN Transaction
-    alt Order Validation Passes
+    alt Order validation passes
         Handler->>DB: INSERT INTO orders VALUES (...)
         Handler->>DB: COMMIT Transaction
         Handler->>Telemetry: InjectAnyMap(ctx, msg.Headers)
-        Telemetry-->>Handler: Return headers with trace context
+        Telemetry-->>Handler: Return map with trace context
         Handler->>Queue: Publish order.created message
         Handler->>Telemetry: Record counter: orders.created
-        Handler->>Telemetry: span.End()
-        Handler->>Gateway: Return 201 Created JSON
-        Gateway->>User: Return HTTP 201 Response
-    else Order Validation Fails
+        Handler->>Telemetry: Call span.End()
+        Handler->>Gateway: Return HTTP 201 Created
+        Gateway->>User: Deliver HTTP 201 Response
+    else Order validation fails
         Handler->>DB: ROLLBACK Transaction
         Handler->>Telemetry: RecordError(span, err)
-        Handler->>Telemetry: span.End()
-        Handler->>Gateway: Return 400 Bad Request JSON
-        Gateway->>User: Return HTTP 400 Response
+        Handler->>Telemetry: Call span.End()
+        Handler->>Gateway: Return HTTP 400 Bad Request
+        Gateway->>User: Deliver HTTP 400 Response
     end
 
     Telemetry->>Collector: Export batch spans and metrics via gRPC
@@ -109,11 +111,11 @@ The sequence diagram models the end-to-end transaction lifecycle. The handler cr
 
 ---
 
-## Data Schema & Lifecycle Operations
+## 2. Data Schema and Lifecycle Operations
 
 The telemetry engine models structured resources, span records, events, and metric descriptors.
 
-### Data Entity Relationship Model
+### 2.1 Data Entity Relationship Model
 
 ```mermaid
 erDiagram
@@ -180,7 +182,9 @@ erDiagram
 
 The entity model defines the schema for telemetry resources and records. Spans maintain parent-child hierarchy across asynchronous operations.
 
-### Lifecycle & State Machine
+---
+
+### 2.2 Lifecycle and State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -199,9 +203,9 @@ stateDiagram-v2
 
     state ActiveExecution {
         [*] --> IdleTelemetry
-        IdleTelemetry --> CreateSpan: Start(ctx, tracer, span)
-        CreateSpan --> PropagateContext: InjectHTTP / InjectAnyMap
-        PropagateContext --> MeasureMetric: RegisterCounter / RegisterHistogram
+        IdleTelemetry --> CreateSpan: Call Start(ctx, tracer, span)
+        CreateSpan --> PropagateContext: InjectHTTP or InjectAnyMap
+        PropagateContext --> MeasureMetric: RecordCounter or RecordHistogram
         MeasureMetric --> IdleTelemetry: Buffer Telemetry Data
     }
 
@@ -221,48 +225,60 @@ The state machine controls exporter startup, buffering, and graceful shutdown. T
 
 ---
 
-## Prerequisites & Tooling
+## 3. Prerequisites and Tooling
 
 Install the verified tools listed in the table below:
 
 | Component | Version | Role / Purpose |
 | :--- | :--- | :--- |
-| Go Compiler | 1.23+ / 1.26+ | Compiles the telemetry library and test suites. |
-| OpenTelemetry Collector | 0.90.0+ | Receives OTLP gRPC telemetry traces and metrics. |
+| Go Compiler | 1.24+ / 1.26+ | Compiles the telemetry library and test suites. |
+| OpenTelemetry Collector | 0.95.0+ | Receives OTLP gRPC telemetry traces and metrics. |
 | Docker Engine | 26.0+ | Executes local container infrastructure. |
 | Docker Compose | v2.26+ | Orchestrates multi-container local environments. |
 | GolangCI-Lint | v1.60+ | Executes static analysis and style checks. |
 
 ---
 
-## Directory Structure
+## 4. Directory Structure
 
 The repository maintains strict modular separation between tracing, metrics, and propagation:
 
 ```text
 .
+├── .github/                # Stores GitHub Actions continuous integration workflows.
+│   └── workflows/
+│       └── ci.yml          # Executes automated test and lint pipelines.
+├── docs/                   # Stores extended technical documentation.
+│   ├── architecture/
+│   │   └── sequences.md    # Documents architecture flows and sequence diagrams.
+│   └── modules/
+│       ├── carrier.md      # Context propagation guide (HTTP, AMQP, AnyMap).
+│       ├── configuration.md # Configuration options, defaults, and validation.
+│       ├── metrics.md      # MetricManager, cached instruments, and reader.
+│       └── tracing.md      # Tracing helpers, span limits, and error capture.
+├── telemetry/              # Implements the OpenTelemetry library.
+│   ├── carrier.go          # Implements HTTP and AnyMap context propagation.
+│   ├── carrier_test.go     # Validates context injection and extraction.
+│   ├── config.go           # Defines telemetry configuration and validators.
+│   ├── metrics.go          # Implements MetricManager and instrument wrappers.
+│   ├── otel.go             # Initializes trace and meter providers.
+│   ├── otel_test.go        # Validates provider initialization and shutdown.
+│   └── trace.go            # Implements span creation and error logging.
+├── CONTRIBUTING.md         # Explains contribution rules and branch standards.
+├── LICENSE                 # Contains the Apache 2.0 software license.
 ├── Makefile                # Defines build, lint, and test targets.
 ├── README.md               # Documents system architecture and instructions.
 ├── go.mod                  # Declares module dependencies and Go version.
-├── go.sum                  # Contains cryptographic checksums of dependencies.
-├── docs/                   # Stores extended technical documentation.
-└── telemetry/              # Implements the OpenTelemetry library.
-    ├── carrier.go          # Implements HTTP and AnyMap context propagation.
-    ├── carrier_test.go     # Validates context injection and extraction.
-    ├── config.go           # Defines telemetry configuration and validators.
-    ├── metrics.go          # Implements MetricManager and instrument wrappers.
-    ├── otel.go             # Initializes trace and meter providers.
-    ├── otel_test.go        # Validates provider initialization and shutdown.
-    └── trace.go            # Implements span creation and error logging.
+└── go.sum                  # Contains cryptographic checksums of dependencies.
 ```
 
 ---
 
-## Configuration Parameters
+## 5. Configuration Parameters
 
 Configure telemetry through functional options or mapped environment variables:
 
-| Variable | Type | Default | Description (Strict STE) |
+| Variable | Type | Default | Description (ASD-STE100) |
 | :--- | :--- | :--- | :--- |
 | `OTEL_ENABLED` | boolean | `true` | Enables or disables telemetry operations. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | string | `localhost:4317` | Sets the OTLP gRPC target host and port. |
@@ -275,13 +291,14 @@ Configure telemetry through functional options or mapped environment variables:
 | `OTEL_TRACE_RATIO` | float | `1.0` | Sets sampling ratio from 0.0 to 1.0. |
 | `OTEL_SHUTDOWN_TIMEOUT` | duration | `5s` | Sets the buffer flush timeout limit. |
 
-> **NOTE:** Do not include URL schemes in `OTEL_EXPORTER_OTLP_ENDPOINT`. The gRPC client requires host and port only.
+> [!NOTE]
+> Do not include URL schemes in `OTEL_EXPORTER_OTLP_ENDPOINT`. The gRPC client requires host and port only. For full configuration parameters and validation rules, see the [Configuration Guide](docs/modules/configuration.md).
 
 ---
 
-## Installation & Execution Procedure
+## 6. Installation and Execution Procedure
 
-Follow these single-action steps to install, configure, and execute the service.
+Follow these procedural steps to install, configure, and execute the service.
 
 ### Step 1: Install Package Dependency
 
@@ -331,22 +348,40 @@ docker compose down
 
 ---
 
-## API / Worker Operational Interface
+## 7. API and Operational Interface
 
-The table summarizes primary library functions:
+The table summarizes all primary library functions and methods across core modules:
 
-| Function Interface | Operational Area | Functional Role |
+| Function Interface | Operational Module | Functional Role (ASD-STE100) |
 | :--- | :--- | :--- |
 | `telemetry.Init(ctx, opts...)` | Core Lifecycle | Initializes providers and returns shutdown handler. |
+| `telemetry.WithConfig(cfg)` | Configuration | Applies settings from an existing Config struct. |
+| `telemetry.DefaultConfig()` | Configuration | Returns standard configuration defaults. |
+| `telemetry.Tracer(name)` | Tracing | Returns a named OpenTelemetry tracer. |
 | `telemetry.Start(ctx, tracer, span)` | Tracing | Starts a child span with context. |
 | `telemetry.RecordError(span, err)` | Tracing | Records an error event and sets error status. |
 | `telemetry.TraceID(ctx)` | Tracing | Returns active hexadecimal trace ID string. |
 | `telemetry.SpanID(ctx)` | Tracing | Returns active hexadecimal span ID string. |
 | `telemetry.InjectHTTP(ctx, header)` | Propagation | Writes W3C trace headers to HTTP request. |
 | `telemetry.ExtractHTTP(ctx, header)` | Propagation | Reads W3C trace headers from HTTP request. |
+| `telemetry.InjectHTTPHeader(ctx, header)` | Propagation | Acts as an alias for `InjectHTTP`. |
+| `telemetry.ExtractHTTPHeader(ctx, header)` | Propagation | Acts as an alias for `ExtractHTTP`. |
 | `telemetry.InjectAnyMap(ctx, map)` | Propagation | Injects trace context into messaging map headers. |
 | `telemetry.ExtractAnyMap(ctx, map)` | Propagation | Extracts trace context from messaging map headers. |
-| `telemetry.NewMetricManager(name)` | Metrics | Instantiates metric registry wrapper. |
+| `telemetry.InjectAMQP(ctx, map)` | Propagation | Acts as an alias for `InjectAnyMap`. |
+| `telemetry.ExtractAMQP(ctx, map)` | Propagation | Acts as an alias for `ExtractAnyMap`. |
+| `telemetry.NewMetricManager(name)` | Metrics | Instantiates metric registry wrapper with cached instruments. |
+| `mm.RegisterCounter(name, desc)` | Metrics | Registers or retrieves a cached integer counter. |
+| `mm.RegisterUpDownCounter(name, desc)` | Metrics | Registers or retrieves a cached up-down counter. |
+| `mm.RegisterHistogram(name, desc, unit)` | Metrics | Registers or retrieves a cached float64 histogram. |
+| `mm.MeasureFunc(name, desc, callback)` | Metrics | Registers a callback to record an observable gauge. |
+
+Detailed operational guides are available in the module references:
+- [Context Propagation Guide](docs/modules/carrier.md)
+- [Distributed Tracing Guide](docs/modules/tracing.md)
+- [Metrics Management Guide](docs/modules/metrics.md)
+- [Configuration Reference](docs/modules/configuration.md)
+- [System Sequences and Architecture Workflows](docs/architecture/sequences.md)
 
 ### Go Application Code Example
 
@@ -431,16 +466,16 @@ Expected JSON response:
 
 ---
 
-## Verification, Testing & Health Check
+## 8. Verification, Testing and Health Check
 
 Run verified commands to validate correctness, performance, and formatting.
 
-### Step 1: Run Unit Tests
+### Step 1: Run Unit Tests with Race Detector
 
 Execute the unit test suite:
 
 ```bash
-go test -v ./...
+go test -v -race ./...
 ```
 
 Expected terminal log:
@@ -453,7 +488,7 @@ Expected terminal log:
 === RUN   TestInit_InvalidConfig
 --- PASS: TestInit_InvalidConfig (0.00s)
 === RUN   TestInit_Idempotency
---- PASS: TestInit_Idempotency (0.20s)
+--- PASS: TestInit_Idempotency (0.21s)
 === RUN   TestInit_FallbackLogger
 --- PASS: TestInit_FallbackLogger (0.00s)
 === RUN   TestConfig_Defaults_And_Options
@@ -466,8 +501,12 @@ Expected terminal log:
 --- PASS: TestTrace_Operations (0.00s)
 === RUN   TestMetrics_Operations
 --- PASS: TestMetrics_Operations (0.00s)
+=== RUN   TestConfig_WithConfig
+--- PASS: TestConfig_WithConfig (0.00s)
+=== RUN   TestInit_Concurrent
+--- PASS: TestInit_Concurrent (0.00s)
 PASS
-ok  	github.com/Jkenyut/nvx-go-telemetry/telemetry	0.837s
+ok  	github.com/Jkenyut/nvx-go-telemetry/telemetry	1.967s
 ```
 
 ### Step 2: Run Coverage Analysis
@@ -480,17 +519,18 @@ go test -v -cover ./...
 
 ### Step 3: Run Static Code Analysis
 
-Execute the linter to verify formatting:
+Execute static analysis checks:
 
 ```bash
-golangci-lint run ./...
+go vet ./...
 ```
 
-> **CAUTION:** Fix all reported linter violations before you push code to remote branches.
+> [!CAUTION]
+> Fix all reported diagnostics before you push code to remote branches.
 
 ---
 
-## Troubleshooting & Fault Isolation
+## 9. Troubleshooting and Fault Isolation
 
 Review the table below to resolve common configuration and runtime errors:
 
@@ -499,14 +539,15 @@ Review the table below to resolve common configuration and runtime errors:
 | `endpoint cannot be empty when enabled` | The configuration lacks an endpoint value. | Set a valid host and port in `WithEndpoint`. |
 | `endpoint must not contain a URL scheme` | The endpoint includes `http://` or `https://`. | Remove the URL prefix from the endpoint string. |
 | `trace ratio must be between 0.0 and 1.0` | The value exceeds permitted sampling bounds. | Set `WithTraceRatio` between `0.0` and `1.0`. |
-| Telemetry spans do not appear in collector. | OTLP gRPC port 4317 is unreachable. | Verify network connectivity to the collector port. |
+| Telemetry spans do not appear in collector. | OTLP gRPC port 4317 is unreachable. | Check network connectivity to the collector port. |
 | `connection refused` on application startup. | The collector container is offline. | Run `docker compose up -d` to start services. |
 | Data loss occurs during process restart. | The service omitted `defer shutdown(ctx)`. | Defer the returned shutdown function in `main()`. |
 
-> **WARNING:** Always defer the returned shutdown function in your application entry point. Unhandled process exits terminate the runtime and discard buffered telemetry spans.
+> [!WARNING]
+> Always defer the returned shutdown function in your application entry point. Unhandled process exits terminate the runtime and discard buffered telemetry spans.
 
 ---
 
-## License
+## 10. License
 
 This software is licensed under the Apache License 2.0. Refer to [LICENSE](LICENSE) for full legal terms.

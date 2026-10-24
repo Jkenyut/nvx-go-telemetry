@@ -113,6 +113,30 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
+// WithConfig applies settings from an existing Config struct.
+// It creates defensive copies of maps to prevent data races.
+func WithConfig(src *Config) Option {
+	return func(c *Config) {
+		if src == nil {
+			return
+		}
+		c.Enabled = src.Enabled
+		c.Endpoint = src.Endpoint
+		c.Insecure = src.Insecure
+		c.Headers = maps.Clone(src.Headers)
+		c.ServiceName = src.ServiceName
+		c.Environment = src.Environment
+		c.ServiceVersion = src.ServiceVersion
+		c.EnableTrace = src.EnableTrace
+		c.EnableMetrics = src.EnableMetrics
+		c.TraceRatio = src.TraceRatio
+		c.ShutdownTimeout = src.ShutdownTimeout
+		if src.Logger != nil {
+			c.Logger = src.Logger
+		}
+	}
+}
+
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{

@@ -1,146 +1,157 @@
-# Architecture & Telemetry Flow Diagrams
+# Architecture and Sequence Workflows
 
-This document outlines the end-to-end architecture and detailed sequence diagrams for the lifecycle, tracing, metrics, and context propagation in [`nvx-go-telemetry`](../../telemetry).
+This document describes the software architecture and operational workflows for [`nvx-go-telemetry`](../../telemetry).
 
 ---
 
-## High-Level Architecture & Data Flow
+## 1. High-Level System Architecture
 
-Visual overview of how your application interacts with `nvx-go-telemetry`, internal in-memory buffers, and observability backends:
+The diagram below shows the data flow between the host application, internal memory buffers, and observability collectors.
 
 ```mermaid
 flowchart TD
-    subgraph APP["Your Application (Host Service)"]
+    subgraph APP["Host Application"]
         direction TB
-        Main["1. Initialization<br/><code>telemetry.Init(ctx, opts...)</code>"]
-        
-        subgraph RUNTIME["2. Runtime Execution"]
+        Main["Initialization: telemetry.Init(ctx, opts...)"]
+
+        subgraph RUNTIME["Runtime Operations"]
             direction LR
-            Tr["Tracing<br/><code>telemetry.Start()</code>"]
-            Mt["Metrics<br/><code>MetricManager</code>"]
-            Lg["Logging<br/><code>slog + TraceID</code>"]
+            Tr["Tracing: telemetry.Start()"]
+            Mt["Metrics: MetricManager"]
+            Lg["Logging: slog with TraceID"]
         end
 
-        Shutdown["4. Graceful Shutdown<br/><code>defer shutdown(ctx)</code>"]
+        Shutdown["Graceful Shutdown: defer shutdown(ctx)"]
     end
 
-    subgraph ENGINE["nvx-go-telemetry Engine (In-Memory Buffers)"]
+    subgraph ENGINE["nvx-go-telemetry Engine"]
         direction TB
-        BSP["BatchSpanProcessor<br/><i>(Queue: 8192, Batch: 1024)</i>"]
-        PR["PeriodicReader<br/><i>(Interval: 30s, Timeout: 10s)</i>"]
-        ErrorHandler["OTel ErrorHandler<br/><i>(Logs via slog.Logger)</i>"]
+        BSP["BatchSpanProcessor (Queue: 8192, Batch: 1024)"]
+        PR["PeriodicReader (Interval: 30s, Timeout: 10s)"]
+        ErrorHandler["OTel ErrorHandler (slog logger)"]
     end
 
-    subgraph BACKEND["Observability Backend"]
-        Collector["OTel Collector / Jaeger / Prometheus<br/><i>(gRPC: 4317)</i>"]
-        Stdout["Stdout / Stderr<br/><i>(Application / Error Logs)</i>"]
+    subgraph BACKEND["Observability Infrastructure"]
+        Collector["OpenTelemetry Collector (gRPC: 4317)"]
+        Stdout["Standard Output (Application Logs)"]
     end
 
-    %% Flow Connections
-    Main -->|Configure OTel & Providers| RUNTIME
-    Tr -->|Span Data| BSP
-    Mt -->|Metric Data| PR
-    Lg -->|Contextual Logs| Stdout
-    ErrorHandler -->|Internal Errors| Stdout
+    Main --> RUNTIME
+    Tr -->|"Span Records"| BSP
+    Mt -->|"Metric Measurements"| PR
+    Lg -->|"Structured Logs"| Stdout
+    ErrorHandler -->|"Internal Errors"| Stdout
 
-    BSP -->|3. Async gRPC Export| Collector
-    PR -->|3. Async gRPC Export| Collector
+    BSP -->|"Export Spans via gRPC"| Collector
+    PR -->|"Export Metrics via gRPC"| Collector
 
-    Shutdown -.->|Flush & Close Pending Spans| BSP
-    Shutdown -.->|Flush & Close Pending Metrics| PR
+    Shutdown -.->|"Flush Spans"| BSP
+    Shutdown -.->|"Flush Metrics"| PR
 ```
+
+The host application configures providers during process startup. The trace helper forwards completed spans to the batch span processor. The metric manager buffers measurement points for the periodic reader. Exporters push queued records to the OpenTelemetry collector over gRPC connections.
 
 ---
 
-## 1. Telemetry Initialization & Graceful Shutdown
+## 2. Telemetry Lifecycle and Graceful Shutdown
 
-This diagram illustrates how [`telemetry.Init`](../../telemetry/otel.go) configures options, sets up the OpenTelemetry error handler using `slog`, instantiates OTel gRPC exporters & providers (traces & metrics), registers global propagators, and executes LIFO graceful shutdown with timeout contexts.
+The sequence diagram below shows provider initialization, error handling configuration, and shutdown sequencing.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor App as Caller App (main)
+    actor App as Host Application
     participant Init as telemetry.Init()
     participant Cfg as Config
     participant Logger as slog.Logger
     participant Res as Resource Builder
-    participant OTelGlobal as otel (Global Registry)
+    participant OTelGlobal as otel Registry
     participant TraceExp as OTLP gRPC Trace Exporter
     participant BSP as BatchSpanProcessor
-    participant TP as TracerProvider (SDK)
+    participant TP as TracerProvider
     participant MetricExp as OTLP gRPC Metric Exporter
-    participant PeriodicReader as PeriodicReader (30s)
-    participant MP as MeterProvider (SDK)
+    participant PR as PeriodicReader
+    participant MP as MeterProvider
 
     App->>Init: Init(ctx, opts...)
-    Init->>Cfg: DefaultConfig() + apply functional options
+    Note over Init: Acquire initMu lock
+    Init->>Cfg: Create DefaultConfig and apply options
+    Init->>Cfg: Validate configuration parameters
 
     alt Config.Enabled == false
-        Init-->>App: no-op shutdown func, nil
+        Init-->>App: Return no-op shutdown function and nil
     end
 
-    Init->>Logger: Resolve cfg.Logger (defaults to slog.Default())
+    Init->>Logger: Resolve structured logger
     Init->>Res: resource.New(WithFromEnv, WithProcess, WithAttributes)
-    Res-->>Init: Resource instance (warns on ErrPartialResource)
+    Res-->>Init: Return resource instance
 
     opt cfg.EnableTrace == true
-        Init->>TraceExp: otlptracegrpc.New(ctx, Endpoint, Insecure, Headers)
-        TraceExp-->>Init: traceExporter
-        Init->>BSP: NewBatchSpanProcessor(traceExporter, Queue: 8192, Batch: 1024, Timeout: 5s)
-        Init->>TP: NewTracerProvider(ParentBased+Ratio, Resource, BSP, SpanLimits)
-        Note over Init: Append tracerProvider.Shutdown to shutdownFuncs
+        Init->>TraceExp: otlptracegrpc.New(ctx, options)
+        TraceExp-->>Init: Return trace exporter
+        Init->>BSP: NewBatchSpanProcessor(traceExporter, queue limits)
+        Init->>TP: NewTracerProvider(Sampler, Resource, BSP, SpanLimits)
+        Note over Init: Register TP.Shutdown into shutdown list
     end
 
     opt cfg.EnableMetrics == true
-        Init->>MetricExp: otlpmetricgrpc.New(ctx, Endpoint, Insecure, Headers)
-        MetricExp-->>Init: metricExporter
-        Init->>PeriodicReader: NewPeriodicReader(metricExporter, Interval: 30s, Timeout: 10s)
-        Init->>MP: NewMeterProvider(Resource, PeriodicReader)
-        Note over Init: Append meterProvider.Shutdown to shutdownFuncs
+        Init->>MetricExp: otlpmetricgrpc.New(ctx, options)
+        MetricExp-->>Init: Return metric exporter
+        Init->>PR: NewPeriodicReader(metricExporter, interval 30s)
+        Init->>MP: NewMeterProvider(Resource, PR)
+        Note over Init: Register MP.Shutdown into shutdown list
     end
 
-    Note over Init,OTelGlobal: Atomic Registration (only when all providers succeed)
     Init->>OTelGlobal: SetErrorHandler(logger callback)
-    Init->>OTelGlobal: SetTextMapPropagator(TraceContext + Baggage)
-    opt TracerProvider created
-        Init->>OTelGlobal: SetTracerProvider(tracerProvider)
-    end
-    opt MeterProvider created
-        Init->>OTelGlobal: SetMeterProvider(meterProvider)
-    end
+    Init->>OTelGlobal: SetTextMapPropagator(TraceContext and Baggage)
+    Init->>OTelGlobal: SetTracerProvider(TP)
+    Init->>OTelGlobal: SetMeterProvider(MP)
+    Init-->>App: Return shutdown function and nil
 
-    Init-->>App: shutdown(context.Context) func, nil
+    Note over App: Host application handles service traffic...
 
-    Note over App: Application runs and handles traffic...
-
-    App->>App: defer shutdown(context.Background())
-    Note over App: Execute registered shutdown handlers in reverse order (LIFO)
+    App->>App: Execute deferred shutdown(ctx)
+    Note over App: shutdownOnce executes cleanup handlers
 
     opt MeterProvider active
-        App->>MP: Shutdown(shutdownCtx with Timeout)
-        MP->>PeriodicReader: Shutdown & Flush pending metrics
-        PeriodicReader->>MetricExp: Export remaining metrics
+        App->>MP: Shutdown(shutdownCtx)
+        MP->>PR: Flush pending metric measurements
+        PR->>MetricExp: Export remaining metrics to collector
     end
 
     opt TracerProvider active
-        App->>TP: Shutdown(shutdownCtx with Timeout)
-        TP->>BSP: Shutdown & Flush pending spans
-        BSP->>TraceExp: Export remaining batches
+        App->>TP: Shutdown(shutdownCtx)
+        TP->>BSP: Flush pending span records
+        BSP->>TraceExp: Export remaining batches to collector
     end
 
-    App-->>App: Graceful shutdown completed (errors.Join)
+    App-->>App: Complete graceful shutdown
 ```
+
+### Operational Steps (ASD-STE100)
+1. Call `telemetry.Init` with configuration options during startup.
+2. The function acquires an internal mutex lock.
+3. The function validates user configuration values.
+4. The function returns a no-op shutdown function when disabled.
+5. The resource builder collects service attributes and process identifiers.
+6. The runtime creates OTLP gRPC exporters for active signals.
+7. The trace provider applies sampling ratios and buffer limits.
+8. The meter provider configures a periodic reader with a thirty-second harvest interval.
+9. The function registers global OpenTelemetry propagators and providers.
+10. The function releases the initialization mutex lock.
+11. Defer the returned shutdown function in the `main` function.
+12. The shutdown function flushes buffers in reverse registration order during termination.
 
 ---
 
-## 2. Tracing Flow & Error Capture
+## 3. Tracing Workflow and Error Recording
 
-This diagram details the lifecycle of creating a span via [`telemetry.Start`](../../telemetry/trace.go), extracting Trace IDs for structured logging correlation, recording errors using [`telemetry.RecordError`](../../telemetry/trace.go), and dispatching data to `BatchSpanProcessor`.
+The sequence diagram below shows span creation, context propagation, error logging, and span termination.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Handler as Business Logic / Handler
+    actor Handler as HTTP Handler
     participant TraceUtil as telemetry (trace.go)
     participant OTelTracer as otel.Tracer
     participant Span as trace.Span
@@ -148,98 +159,140 @@ sequenceDiagram
     participant BSP as BatchSpanProcessor
 
     Handler->>TraceUtil: Start(ctx, "orders", "ProcessPayment")
-    TraceUtil->>OTelTracer: Tracer("orders").Start(ctx, "ProcessPayment", opts...)
-    OTelTracer-->>TraceUtil: spanCtx, span
-    TraceUtil-->>Handler: spanCtx, span
+    TraceUtil->>OTelTracer: Tracer("orders").Start(ctx, "ProcessPayment")
+    OTelTracer-->>TraceUtil: Return spanCtx and span handle
+    TraceUtil-->>Handler: Return spanCtx and span handle
 
     Handler->>TraceUtil: TraceID(spanCtx)
-    TraceUtil-->>Handler: "4bf92f3577b34da6a3ce929d0e0e4736"
+    TraceUtil-->>Handler: Return 32-character trace ID string
 
-    Handler->>AppLogger: logger.InfoContext(spanCtx, "Processing payment...", "trace_id", traceID)
+    Handler->>AppLogger: InfoContext(spanCtx, "Payment started", "trace_id", traceID)
 
-    alt Operation Fails
+    alt Business operation fails
         Handler->>TraceUtil: RecordError(span, err)
         TraceUtil->>Span: RecordError(err)
         TraceUtil->>Span: SetStatus(codes.Error, err.Error())
     end
 
     Handler->>Span: End()
-    Span->>BSP: OnEnd(spanReadOnly)
-    Note over BSP: Enqueue span into queue (max 8192) for batch export
+    Span->>BSP: Push span to internal queue
+    Note over BSP: Buffer enqueues span for batch export
 ```
+
+### Operational Steps (ASD-STE100)
+1. Call `telemetry.Start` with context and operation names.
+2. The function returns a child context and a span handle.
+3. Read the active trace identifier with `telemetry.TraceID`.
+4. Include the trace identifier in structured log messages.
+5. Record operation failures with `telemetry.RecordError`.
+6. The error helper marks the span status as an error.
+7. Always call `span.End` in a defer statement.
+8. The span moves to the batch processor for export.
 
 ---
 
-## 3. Metrics Lifecycle & Periodic Harvesting
+## 4. Metrics Workflow and Instrument Caching
 
-This diagram demonstrates metric instruments registration using [`MetricManager`](../../telemetry/metrics.go) and the periodic harvesting mechanism powered by OpenTelemetry SDK `PeriodicReader`.
+The sequence diagram below shows instrument registration, cache lookups, and periodic data exports.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Service as Service Component
+    actor Service as Domain Service
     participant MM as MetricManager
     participant Meter as otel.Meter
-    participant PeriodicReader as sdkmetric.PeriodicReader (Ticker: 30s)
+    participant PR as PeriodicReader
     participant Exporter as otlpmetricgrpc Exporter
-    participant Collector as OpenTelemetry Collector
+    participant Collector as OTel Collector
 
-    Service->>MM: NewMetricManager("service.orders")
-    MM->>Meter: otel.Meter("service.orders")
-    MM-->>Service: *MetricManager
+    Service->>MM: NewMetricManager("orders.service")
+    MM->>Meter: otel.Meter("orders.service")
+    MM-->>Service: Return MetricManager pointer
 
     Service->>MM: RegisterCounter("orders_total", "Total processed orders")
-    MM->>Meter: Int64Counter("orders_total", opts...)
-    Meter-->>Service: ordersCounter (Int64Counter)
+    Note over MM: Check internal cache map with read lock
 
-    Service->>MM: RegisterHistogram("payment_latency_ms", "Payment duration", "ms")
-    MM->>Meter: Float64Histogram("payment_latency_ms", opts...)
-    Meter-->>Service: latencyHist (Float64Histogram)
+    alt Instrument not cached
+        MM->>Meter: Create Int64Counter
+        Meter-->>MM: Return counter handle
+        Note over MM: Store counter in cache with write lock
+    end
+    MM-->>Service: Return cached counter handle
 
-    Note over Service: Runtime operations execute
-    Service->>Service: ordersCounter.Add(ctx, 1, attrs...)
-    Service->>Service: latencyHist.Record(ctx, 124.5, attrs...)
+    Service->>MM: RegisterHistogram("payment_latency_ms", "Latency", "ms")
+    Note over MM: Check internal cache map with read lock
 
-    loop Every 30 Seconds
-        PeriodicReader->>Meter: Collect & Aggregate metrics
-        PeriodicReader->>Exporter: Export(ctx, metricDataBatch)
-        Exporter->>Collector: gRPC ExportMetricsServiceRequest
-        Collector-->>Exporter: gRPC ExportMetricsServiceResponse (OK)
+    alt Instrument not cached
+        MM->>Meter: Create Float64Histogram
+        Meter-->>MM: Return histogram handle
+        Note over MM: Store histogram in cache with write lock
+    end
+    MM-->>Service: Return cached histogram handle
+
+    Service->>Service: counter.Add(ctx, 1)
+    Service->>Service: histogram.Record(ctx, 142.5)
+
+    loop Every 30 seconds
+        PR->>Meter: Harvest aggregated metrics
+        PR->>Exporter: Export metric data batch
+        Exporter->>Collector: Send gRPC ExportMetricsServiceRequest
+        Collector-->>Exporter: Return gRPC response confirmation
     end
 ```
 
+### Operational Steps (ASD-STE100)
+1. Create a `MetricManager` instance with an instrumentation name.
+2. Call `RegisterCounter` to create an integer counter.
+3. The manager checks internal memory cache for duplicate names.
+4. The manager returns existing handles if previously registered.
+5. Call `RegisterHistogram` to create a duration instrument.
+6. Record runtime observations with `Add` or `Record` methods.
+7. The periodic reader harvests measurements every thirty seconds.
+8. The exporter sends metric batches to the OpenTelemetry collector.
+
 ---
 
-## 4. Distributed Context Propagation (W3C TraceContext)
+## 5. Distributed Context Propagation Workflow
 
-This diagram shows how TraceContext and Baggage headers are extracted from an incoming HTTP request and injected into downstream network calls to preserve distributed end-to-end trace correlation.
+The sequence diagram below shows context extraction from HTTP and messaging carriers, followed by context injection.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Upstream as Upstream Client / Gateway
+    actor Gateway as Inbound Gateway
     participant Handler as Inbound HTTP Handler
-    participant Propagator as otel.GetTextMapPropagator()
-    participant TraceHelper as telemetry.Start()
+    participant Carrier as Carrier Adapter
+    participant Propagator as otel TextMapPropagator
+    participant Consumer as RabbitMQ Consumer
     participant Client as Outbound HTTP Client
-    participant Downstream as Downstream Service
+    participant Target as Downstream Service
 
-    Upstream->>Handler: HTTP Request with Headers:<br/>traceparent: 00-4bf92f35...-00f067aa...-01<br/>baggage: userId=123
-    Handler->>Propagator: Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-    Propagator-->>Handler: extractedCtx (contains remote parent SpanContext)
+    Gateway->>Handler: HTTP Request with traceparent header
+    Handler->>Carrier: ExtractHTTP(r.Context(), r.Header)
+    Carrier->>Propagator: Extract(ctx, HeaderCarrier(header))
+    Propagator-->>Carrier: Return extracted context
+    Carrier-->>Handler: Return context with parent trace ID
 
-    Handler->>TraceHelper: Start(extractedCtx, "service-b", "HandleOrder")
-    TraceHelper-->>Handler: serviceBCtx, span (child span linked to upstream trace)
+    Consumer->>Carrier: ExtractAnyMap(ctx, amqpHeaders)
+    Note over Carrier: Match keys with case-insensitive check
+    Carrier->>Propagator: Extract(ctx, AnyMapCarrier(amqpHeaders))
+    Propagator-->>Carrier: Return extracted context
+    Carrier-->>Consumer: Return context with parent trace ID
 
-    Note over Handler: Handler prepares outbound request to Downstream Service
+    Handler->>Client: Prepare outbound HTTP request
+    Client->>Carrier: InjectHTTP(reqCtx, req.Header)
+    Carrier->>Propagator: Inject(reqCtx, HeaderCarrier(req.Header))
+    Note over Propagator: Write traceparent and baggage headers
 
-    Handler->>Client: Create new HTTP Request (serviceBCtx)
-    Client->>Propagator: Inject(serviceBCtx, propagation.HeaderCarrier(req.Header))
-    Note over Propagator: Injects new traceparent (new Span ID, same Trace ID)
-
-    Client->>Downstream: HTTP Request (traceparent, baggage)
-    Downstream-->>Client: HTTP 200 OK
-    Client-->>Handler: Response received
-
-    Handler->>TraceHelper: span.End()
+    Client->>Target: Send HTTP request with distributed trace headers
+    Target-->>Client: Return HTTP response
 ```
+
+### Operational Steps (ASD-STE100)
+1. Read incoming request headers with `telemetry.ExtractHTTP`.
+2. Extract message broker headers with `telemetry.ExtractAnyMap`.
+3. The carrier matches header keys with case-insensitive comparisons.
+4. Pass the extracted context to `telemetry.Start`.
+5. Inject trace context into outbound requests with `telemetry.InjectHTTP`.
+6. Inject trace context into message payloads with `telemetry.InjectAnyMap`.
+7. Transmit network payloads with W3C traceparent headers.

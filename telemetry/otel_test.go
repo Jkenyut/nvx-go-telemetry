@@ -368,4 +368,100 @@ func TestMetrics_Operations(t *testing.T) {
 	if _, err := mm.MeasureFunc("", "empty name", nil); err == nil {
 		t.Fatalf("expected error registering gauge with empty name")
 	}
+
+	// 8. Test Instrument Caching Idempotency
+	c1, err := mm.RegisterCounter("cached_counter", "desc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c2, err := mm.RegisterCounter("cached_counter", "desc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c1 != c2 {
+		t.Fatalf("expected cached counter instance, got different pointers")
+	}
+
+	u1, err := mm.RegisterUpDownCounter("cached_updown", "desc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u2, err := mm.RegisterUpDownCounter("cached_updown", "desc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if u1 != u2 {
+		t.Fatalf("expected cached up-down counter instance, got different pointers")
+	}
+
+	h1, err := mm.RegisterHistogram("cached_hist", "desc", "ms")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	h2, err := mm.RegisterHistogram("cached_hist", "desc", "ms")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h1 != h2 {
+		t.Fatalf("expected cached histogram instance, got different pointers")
+	}
+}
+
+func TestConfig_WithConfig(t *testing.T) {
+	src := &Config{
+		Enabled:         true,
+		Endpoint:        "remote-otel:4317",
+		Insecure:        false,
+		Headers:         map[string]string{"auth": "bearer-token"},
+		ServiceName:     "custom-app",
+		Environment:     "production",
+		ServiceVersion:  "1.0.0",
+		EnableTrace:     true,
+		EnableMetrics:   true,
+		TraceRatio:      0.75,
+		ShutdownTimeout: 10 * time.Second,
+	}
+
+	cfg := DefaultConfig()
+	WithConfig(src)(cfg)
+
+	if cfg.Endpoint != "remote-otel:4317" || cfg.Insecure != false || cfg.ServiceName != "custom-app" || cfg.TraceRatio != 0.75 {
+		t.Fatalf("WithConfig did not apply expected fields: %+v", cfg)
+	}
+	// Check defensive copy
+	src.Headers["auth"] = "mutated"
+	if cfg.Headers["auth"] != "bearer-token" {
+		t.Fatalf("expected cloned headers, got %q", cfg.Headers["auth"])
+	}
+
+	// Nil src should not panic
+	WithConfig(nil)(cfg)
+}
+
+func TestInit_Concurrent(t *testing.T) {
+	const goroutines = 8
+	errCh := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(id int) {
+			shutdown, err := Init(context.Background(),
+				WithEnabled(true),
+				WithServiceName("concurrent-test"),
+				WithTraceEnabled(false),
+				WithMetricsEnabled(false),
+			)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			_ = shutdown(context.Background())
+			errCh <- nil
+		}(i)
+	}
+
+	for i := 0; i < goroutines; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent Init failed: %v", err)
+		}
+	}
 }

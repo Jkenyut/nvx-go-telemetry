@@ -1,63 +1,100 @@
-# How to Contribute
+# Contribution Guidelines
 
-## Your First Pull Request
-We use GitHub for our codebase. You can start by reading [How To Pull Request](https://docs.github.com/en/github/collaborating-with-issues-and-pull-requests/about-pull-requests).
+This document provides instructions for contributing code to `nvx-go-telemetry`.
 
-## Without Semantic Versioning
-We keep the stable code in branch `main` like `golang.org/x`. Development base on branch `development`. We promise the **Forward Compatibility** by adding new package directory with suffix `v2/v3` when code has break changes.
+---
 
-## Branch Organization
-We use [git-flow](https://nvie.com/posts/a-successful-git-branching-model/) as our branch organization, as known as [FDD](https://en.wikipedia.org/wiki/Feature-driven_development)
+## 1. Contribution Workflow
 
+The diagram below shows the branch lifecycle and pull request process.
 
-## Bugs
-### 1. How to Find Known Issues
-We are using [Github Issues](https://github.com/Jkenyut/nvx-go-telemetry/issues) for our public bugs. We keep a close eye on this and try to make it clear when we have an internal fix in progress. Before filing a new task, try to make sure your problem doesn’t already exist.
+```mermaid
+flowchart TD
+    Fork["1. Fork Repository on GitHub"] --> Clone["2. Clone Fork to Local Machine"]
+    Clone --> Branch["3. Create Feature Branch from development"]
+    Branch --> Code["4. Implement Changes and Write Unit Tests"]
+    Code --> Vet["5. Run go vet and go test with Race Detector"]
+    Vet --> Commit["6. Commit Changes with Conventional Commits"]
+    Commit --> Push["7. Push Branch to Remote Fork"]
+    Push --> PR["8. Open Pull Request Targeting development"]
+    PR --> Review["9. Code Review and CI Approval"]
+    Review --> Merge["10. Maintainers Merge into development"]
+```
 
-### 2. Reporting New Issues
-Providing a reduced test code is a recommended way for reporting issues. Then can be placed in:
-- Just in issues
-- [Golang Playground](https://play.golang.org/)
+---
 
-### 3. Security Bugs
-Please do not report the safe disclosure of bugs to public issues. Contact us by [Support Email](mailto:satrianursaputro06@gmail.com)
+## 2. Branch Organization
 
-## How to Get in Touch
-- [Email](mailto:satrianursaputro06@gmail.com)
+The project uses a structured branching model:
+- The `main` branch stores stable production releases.
+- The `development` branch stores ongoing integration changes.
+- Create topic branches from the `development` branch.
+- Use one of the following prefixes for branch names:
+  - `feature/`
+  - `bugfix/`
+  - `refactor/`
+  - `test/`
+  - `doc/`
+  - `ci/`
 
-## Submit a Pull Request
-Before you submit your Pull Request (PR) consider the following guidelines:
-1. Search [GitHub](https://github.com/Jkenyut/nvx-go-telemetry/pulls) for an open or closed PR that relates to your submission. You don't want to duplicate existing efforts.
-2. Be sure that an issue describes the problem you're fixing, or documents the design for the feature you'd like to add. Discussing the design upfront helps to ensure that we're ready to accept your work.
-3. [Fork](https://docs.github.com/en/github/getting-started-with-github/fork-a-repo) the Jkenyut/nvx-go-telemetry repo.
-4. In your forked repository, make your changes in a new git branch:
-    ```
-    git checkout -b bugfix/security_bug develop
-    ```
-5. Create your patch, including appropriate test cases.
-6. Follow our [Style Guides](#code-style-guides).
-7. Commit your changes using a descriptive commit message that follows [AngularJS Git Commit Message Conventions](https://docs.google.com/document/d/1QrDFcIiPjSLDn3EL15IJygNPiHORgU1_OOAqWjiDU5Y/edit).
-   Adherence to these conventions is necessary because release notes will be automatically generated from these messages.
-8. Push your branch to GitHub:
-    ```
-    git push origin bugfix/security_bug
-    ```
-9. In GitHub, send a pull request to `nvx-go-telemetry:main`
+---
 
-Note: you must use one of `optimize/feature/bugfix/doc/ci/test/refactor` following a slash(`/`) as the branch prefix.
+## 3. Reporting Issues
 
-Your pr title and commit message should follow https://www.conventionalcommits.org/.
+Follow these instructions to report defects or request features:
+1. Search open and closed issues on GitHub to prevent duplicate entries.
+2. Open a new issue if no matching defect exists.
+3. Provide a clear description of the defect.
+4. Include minimal reproduction steps or Go test code.
+5. Do not post security vulnerabilities to public issues.
+6. Send security reports to: `satrianursaputro06@gmail.com`.
 
-## Contribution Prerequisites
-- Our development environment keeps up with [Go Official](https://golang.org/project/).
-- You need fully checking with lint tools before submit your pull request. [gofmt](https://golang.org/pkg/cmd/gofmt/) & [golangci-lint](https://github.com/golangci/golangci-lint)
-- You are familiar with [Github](https://github.com) 
-- Maybe you need familiar with [Actions](https://github.com/features/actions)(our default workflow tool).
+---
 
-## Code Style Guides
-See [Go Code Review Comments](https://github.com/golang/go/wiki/CodeReviewComments).
+## 4. Development and Pull Request Procedure
 
-Good resources:
-- [Effective Go](https://golang.org/doc/effective_go)
-- [Pingcap General advice](https://pingcap.github.io/style-guide/general.html)
-- [Uber Go Style Guide](https://github.com/uber-go/guide/blob/master/style.md)
+Follow these procedural steps to contribute code changes:
+
+### Step 1: Prepare the Local Environment
+1. Fork the repository to your personal GitHub account.
+2. Clone the forked repository to your local computer:
+   ```bash
+   git clone https://github.com/<your-username>/nvx-go-telemetry.git
+   ```
+3. Change the directory to the repository folder:
+   ```bash
+   cd nvx-go-telemetry
+   ```
+4. Create a topic branch from the `development` branch:
+   ```bash
+   git checkout -b feature/my-feature-name origin/development
+   ```
+
+### Step 2: Implement and Validate Changes
+1. Write Go code following standard style guidelines.
+2. Add unit tests for all new functions.
+3. Verify test coverage and race safety:
+   ```bash
+   go test -v -race ./...
+   ```
+4. Execute static code analysis:
+   ```bash
+   go vet ./...
+   ```
+5. Format source files using the standard tool:
+   ```bash
+   gofmt -w .
+   ```
+
+### Step 3: Commit and Submit
+1. Create descriptive commit messages using Conventional Commits format.
+2. Example commit message format:
+   ```text
+   feat: add support for custom trace samplers
+   ```
+3. Push your branch to your remote fork:
+   ```bash
+   git push origin feature/my-feature-name
+   ```
+4. Open a pull request against the `development` branch on GitHub.
+5. Complete all items in the pull request description checklist.

@@ -49,7 +49,24 @@ func TestCarrierHTTPAndAnyMap(t *testing.T) {
 		t.Errorf("expected trace ID %s, got %s", traceID, TraceID(extractedMapCtx))
 	}
 
-	// 3. Test Nil Safety
+	// 3. Test Case-Insensitive Fallback & Byte Slices in AnyMapCarrier
+	capitalizedTable := map[string]any{
+		"Traceparent": table["traceparent"],
+	}
+	extractedCapCtx := ExtractAnyMap(context.Background(), capitalizedTable)
+	if TraceID(extractedCapCtx) != traceID {
+		t.Errorf("expected case-insensitive trace ID %s, got %s", traceID, TraceID(extractedCapCtx))
+	}
+
+	byteTable := map[string]any{
+		"TRACEPARENT": []byte(table["traceparent"].(string)),
+	}
+	extractedByteCtx := ExtractAnyMap(context.Background(), byteTable)
+	if TraceID(extractedByteCtx) != traceID {
+		t.Errorf("expected byte slice trace ID %s, got %s", traceID, TraceID(extractedByteCtx))
+	}
+
+	// 4. Test Nil Safety
 	InjectHTTP(nil, nil)
 	_ = ExtractHTTP(nil, nil)
 	_ = InjectAnyMap(nil, nil)

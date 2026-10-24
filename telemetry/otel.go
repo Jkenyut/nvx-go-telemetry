@@ -19,9 +19,14 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
+var initMu sync.Mutex
+
 // Init sets up OpenTelemetry providers based on the provided options.
 // It returns an idempotent shutdown function that should be deferred to ensure data is flushed.
 func Init(ctx context.Context, opts ...Option) (func(context.Context) error, error) {
+	initMu.Lock()
+	defer initMu.Unlock()
+
 	if ctx == nil {
 		ctx = context.Background()
 	}

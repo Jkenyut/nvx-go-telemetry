@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -13,19 +14,30 @@ import (
 type AnyMapCarrier map[string]any
 
 // Get returns the value associated with the key.
+// It checks exact key matches first, then falls back to case-insensitive comparison.
 func (c AnyMapCarrier) Get(key string) string {
 	if c == nil {
 		return ""
 	}
-	val, ok := c[key]
-	if !ok || val == nil {
-		return ""
+	// 1. Direct exact lookup
+	if val, ok := c[key]; ok && val != nil {
+		if str, ok := val.(string); ok {
+			return str
+		}
+		if b, ok := val.([]byte); ok {
+			return string(b)
+		}
 	}
-	if str, ok := val.(string); ok {
-		return str
-	}
-	if b, ok := val.([]byte); ok {
-		return string(b)
+	// 2. Case-insensitive fallback for messaging headers (e.g. Traceparent)
+	for k, val := range c {
+		if strings.EqualFold(k, key) && val != nil {
+			if str, ok := val.(string); ok {
+				return str
+			}
+			if b, ok := val.([]byte); ok {
+				return string(b)
+			}
+		}
 	}
 	return ""
 }

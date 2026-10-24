@@ -1,4 +1,4 @@
-.PHONY: test lint clean help
+.PHONY: test test-race test-cover lint clean help
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -9,11 +9,15 @@ help: ## Show this help message
 test: ## Run all unit tests
 	go test -v ./...
 
+test-race: ## Run all unit tests with race detector
+	go test -v -race ./...
+
 test-cover: ## Run tests with coverage
 	go test -v -cover ./...
 
-lint: ## Auto-fix golangci-lint issues
-	golangci-lint run --fix ./... 
+lint: ## Run code linter and static analysis
+	go vet ./...
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; fi
 
 clean: ## Clean build artifacts
 	go clean
