@@ -1,28 +1,20 @@
 # nvx-go-telemetry
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/nvx-go/nvx-go-telemetry.svg)](https://pkg.go.dev/github.com/nvx-go/nvx-go-telemetry)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+OpenTelemetry management library for Go applications.
 
-`nvx-go-telemetry` is a streamlined OpenTelemetry management library for Go applications. It simplifies the initialization and configuration of OTLP Traces and Metrics exporters, adhering to best practices out of the box.
+## Overview
+This library provides OpenTelemetry Traces, Metrics, and Context Propagation.
+It configures OTLP gRPC exporters with production-ready buffer limits.
 
-## ✨ Features
-
-- **OpenTelemetry Native**: Built directly on top of `go.opentelemetry.io`.
-- **Zero-Boilerplate Setup**: Initialize tracing and metrics with a single function call.
-- **Configurable**: Environment-driven or code-driven configuration options.
-- **Graceful Shutdown**: Built-in context handling and timeout for flushing telemetry data.
-- **Production Ready**: Uses standard `TraceContext` and `Baggage` propagators, optimal export batch limits, and built-in error handling via standard library `log/slog`.
-- **Logging Helpers**: Easily extract `TraceID` and `SpanID` for context-aware logging.
-
-## 📦 Installation
+## Installation
+Install the package with the Go command:
 
 ```bash
-go get github.com/nvx-go/nvx-go-telemetry
+go get github.com/Jkenyut/nvx-go-telemetry
 ```
 
-## 🚀 Quick Start
-
-Here is a complete example of initializing the telemetry provider and gracefully shutting it down:
+## Quick Start
+Initialize telemetry at service startup. Always defer the shutdown function call.
 
 ```go
 package main
@@ -31,16 +23,15 @@ import (
 	"context"
 	"log"
 
-	"github.com/nvx-go/nvx-go-telemetry/telemetry"
+	"github.com/Jkenyut/nvx-go-telemetry/telemetry"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Initialize OpenTelemetry
 	shutdown, err := telemetry.Init(ctx,
 		telemetry.WithEnabled(true),
-		telemetry.WithServiceName("my-awesome-service"),
+		telemetry.WithServiceName("my-service"),
 		telemetry.WithEnvironment("production"),
 		telemetry.WithServiceVersion("v1.0.0"),
 		telemetry.WithEndpoint("localhost:4317"),
@@ -49,109 +40,54 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize telemetry: %v", err)
 	}
-	// Ensure all data is flushed upon exit
-	defer func() {
-		if err := shutdown(context.Background()); err != nil {
-			log.Printf("failed to gracefully shutdown telemetry: %v", err)
-		}
-	}()
+	defer shutdown(context.Background())
 
-	// Use the library's Start wrapper to create a span with a proper tracer name scope
-	ctx, span := telemetry.Start(ctx, "main-package", "main.operation")
+	// Start a trace span
+	ctx, span := telemetry.Start(ctx, "main", "process.task")
 	defer span.End()
-	
-	// Easily extract Trace IDs for logging
-	log.Printf("Started processing trace_id=%s", telemetry.TraceID(ctx))
 
-	// Register and record metrics with MetricManager
-	mm := telemetry.NewMetricManager("main-package")
-	counter, err := mm.RegisterCounter("requests_total", "Total requests processed")
-	if err == nil {
-		counter.Add(ctx, 1)
-	}
+	// Extract active trace ID for structured logs
+	traceID := telemetry.TraceID(ctx)
+	log.Printf("Processing job with trace_id=%s", traceID)
 }
 ```
 
-## ⚙️ Configuration Options
+## Trace Context Propagation
 
-The library is highly configurable using functional options during initialization:
+### HTTP Propagation
+Use these functions to inject or extract trace headers in HTTP requests:
+
+```go
+// Inject trace context into an outbound HTTP request header
+telemetry.InjectHTTP(ctx, req.Header)
+
+// Extract trace context from an inbound HTTP request header
+ctx = telemetry.ExtractHTTP(r.Context(), r.Header)
+```
+
+### Message Broker Propagation (RabbitMQ / Kafka)
+Use `InjectAnyMap` and `ExtractAnyMap` with `map[string]any` headers:
+
+```go
+// In publisher: inject trace context into message headers
+msg.Headers = telemetry.InjectAnyMap(ctx, msg.Headers)
+
+// In consumer: extract trace context before you start the span
+ctx = telemetry.ExtractAnyMap(ctx, msg.Headers)
+```
+
+## Configuration Options
 
 | Option | Description | Default |
 | :--- | :--- | :--- |
-| `WithEnabled(bool)` | Master switch to enable/disable telemetry | `true` |
-| `WithServiceName(string)` | Sets the `service.name` resource attribute | `nvx-go-telemetry` |
-| `WithEnvironment(string)` | Sets the `deployment.environment` resource attribute | |
-| `WithServiceVersion(string)` | Sets the `service.version` resource attribute | |
-| `WithEndpoint(string)` | Sets the OTLP gRPC endpoint | `localhost:4317` |
-| `WithInsecure(bool)` | Disables TLS for the OTLP connection | `true` |
-| `WithHeaders(map[string]string)`| Sets custom headers (e.g., API Keys) for exporters | `nil` |
-| `WithTraceEnabled(bool)` | Specifically enable/disable tracing | `true` |
-| `WithMetricsEnabled(bool)` | Specifically enable/disable metrics | `true` |
-| `WithTraceRatio(float64)` | Sampling ratio for tracing (0.0 to 1.0) | `1.0` |
-| `WithShutdownTimeout(time.Duration)` | Sets graceful shutdown timeout budget | `5s` |
-| `WithLogger(*slog.Logger)` | Sets a custom logger for OTEL internal errors | `slog.Default()` |
+| `WithEnabled(bool)` | Enable or disable telemetry | `true` |
+| `WithServiceName(string)` | Set resource service name | `nvx-go-telemetry` |
+| `WithEnvironment(string)` | Set deployment environment | `""` |
+| `WithServiceVersion(string)` | Set semantic version | `""` |
+| `WithEndpoint(string)` | Set OTLP gRPC endpoint | `"localhost:4317"` |
+| `WithInsecure(bool)` | Disable TLS encryption | `true` |
+| `WithTraceRatio(float64)` | Sampling ratio between 0.0 and 1.0 | `1.0` |
+| `WithShutdownTimeout(Duration)` | Timeout limit for flushing data | `5s` |
 
-## 🛠️ Helpers
-
-The library provides convenient helpers to integrate traces with your logging systems (e.g., `slog`, `zerolog`):
-
-- `telemetry.TraceID(ctx)`: Returns the current active `TraceID` as a string.
-- `telemetry.SpanID(ctx)`: Returns the current active `SpanID` as a string.
-
-## 🤝 Best Practices Included
-
-- **Resource Attributes**: Automatically injects `deployment.environment` and `service.version` alongside `OTEL_RESOURCE_ATTRIBUTES`.
-- **Propagation**: Globally registers `TraceContext` and `Baggage` propagators.
-- **Batching & Limits**: Sets explicit limits to prevent OOM errors and manages safe batching configurations.
-
-## 📐 Architecture & Data Flow
-
-`nvx-go-telemetry` provides an end-to-end observability pipeline with non-blocking in-memory buffers to keep your application fast and resilient:
-
-```mermaid
-flowchart TD
-    subgraph APP["Your Application (Host Service)"]
-        direction TB
-        Main["1. Initialization<br/><code>telemetry.Init(ctx, opts...)</code>"]
-        
-        subgraph RUNTIME["2. Runtime Execution"]
-            direction LR
-            Tr["Tracing<br/><code>telemetry.Start()</code>"]
-            Mt["Metrics<br/><code>MetricManager</code>"]
-            Lg["Logging<br/><code>slog + TraceID</code>"]
-        end
-
-        Shutdown["4. Graceful Shutdown<br/><code>defer shutdown(ctx)</code>"]
-    end
-
-    subgraph ENGINE["nvx-go-telemetry Engine (In-Memory Buffers)"]
-        direction TB
-        BSP["BatchSpanProcessor<br/><i>(Queue: 8192, Batch: 1024)</i>"]
-        PR["PeriodicReader<br/><i>(Interval: 30s, Timeout: 10s)</i>"]
-        ErrorHandler["OTel ErrorHandler<br/><i>(Logs via slog.Logger)</i>"]
-    end
-
-    subgraph BACKEND["Observability Backend"]
-        Collector["OTel Collector / Jaeger / Prometheus<br/><i>(gRPC: 4317)</i>"]
-        Stdout["Stdout / Stderr<br/><i>(Application / Error Logs)</i>"]
-    end
-
-    %% Flow Connections
-    Main -->|Configure OTel & Providers| RUNTIME
-    Tr -->|Span Data| BSP
-    Mt -->|Metric Data| PR
-    Lg -->|Contextual Logs| Stdout
-    ErrorHandler -->|Internal Errors| Stdout
-
-    BSP -->|3. Async gRPC Export| Collector
-    PR -->|3. Async gRPC Export| Collector
-
-    Shutdown -.->|Flush & Close Pending Spans| BSP
-    Shutdown -.->|Flush & Close Pending Metrics| PR
-```
-
-Detailed technical sequence diagrams can be found in [docs/architecture/sequences.md](docs/architecture/sequences.md).
-
-## 📄 License
-
-This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) file for details.
+## License
+Apache License 2.0. See [LICENSE](LICENSE) for details.

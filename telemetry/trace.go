@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Tracer returns the standard tracer for the application.
+// Tracer returns an OpenTelemetry tracer for the specified package or module name.
 func Tracer(name string) trace.Tracer {
 	if name == "" {
 		name = "unknown-tracer"
@@ -16,9 +16,9 @@ func Tracer(name string) trace.Tracer {
 	return otel.Tracer(name)
 }
 
-// Start creates a new span from the global tracer.
-// tracerName should ideally be the package name creating the span.
-// It is safe to call with a nil context.
+// Start starts a new child span from the active context.
+// Supply a non-empty tracer name and span name.
+// This function handles a nil context safely by using context.Background.
 func Start(ctx context.Context, tracerName, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -26,8 +26,9 @@ func Start(ctx context.Context, tracerName, spanName string, opts ...trace.SpanS
 	return Tracer(tracerName).Start(ctx, spanName, opts...)
 }
 
-// RecordError records an error into a span and sets its status to Error.
-// It is safe to call with a nil span or nil error.
+// RecordError records an error event into the provided span.
+// It sets the span status to Error.
+// The function returns immediately if the span or the error is nil.
 func RecordError(span trace.Span, err error) {
 	if span == nil || err == nil {
 		return
@@ -36,7 +37,8 @@ func RecordError(span trace.Span, err error) {
 	span.SetStatus(codes.Error, err.Error())
 }
 
-// TraceID extracts the TraceID from the context, or returns an empty string if no trace exists.
+// TraceID returns the active trace ID string from the context.
+// It returns an empty string if the context is nil or lacks a trace ID.
 func TraceID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -48,7 +50,8 @@ func TraceID(ctx context.Context) string {
 	return ""
 }
 
-// SpanID extracts the SpanID from the context, or returns an empty string if no span exists.
+// SpanID returns the active span ID string from the context.
+// It returns an empty string if the context is nil or lacks a span ID.
 func SpanID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
