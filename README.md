@@ -134,7 +134,7 @@ erDiagram
         string environment
         string service_version
         float trace_ratio
-        duration shutdown_timeout
+        int64 shutdown_timeout
     }
 
     RESOURCE_METADATA {
@@ -411,7 +411,7 @@ func main() {
 		telemetry.WithEndpoint("localhost:4317"),
 		telemetry.WithInsecure(true),
 		telemetry.WithTraceRatio(1.0),
-		telemetry.WithShutdownTimeout(5*time.Second),
+		telemetry.WithShutdownTimeout(5000), // in milliseconds (5s)
 	)
 	if err != nil {
 		log.Fatalf("Initialization error: %v", err)

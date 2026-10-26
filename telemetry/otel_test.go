@@ -65,12 +65,12 @@ func TestInit_InvalidConfig(t *testing.T) {
 
 	// Shutdown timeout default reset on zero or negative
 	cfg := DefaultConfig()
-	cfg.ShutdownTimeout = -1 * time.Second
+	cfg.ShutdownTimeout = -1
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected validate error: %v", err)
 	}
-	if cfg.ShutdownTimeout != 5*time.Second {
-		t.Fatalf("expected reset to 5s, got %v", cfg.ShutdownTimeout)
+	if cfg.ShutdownTimeout != 5000 {
+		t.Fatalf("expected reset to 5000ms, got %v", cfg.ShutdownTimeout)
 	}
 }
 
@@ -88,7 +88,7 @@ func TestInit_Idempotency(t *testing.T) {
 		WithTraceEnabled(true),
 		WithMetricsEnabled(true),
 		WithTraceRatio(0.5),
-		WithShutdownTimeout(200*time.Millisecond),
+		WithShutdownTimeout(200),
 		WithLogger(testLogger),
 	)
 	if err != nil {
@@ -123,7 +123,7 @@ func TestInit_FallbackLogger(t *testing.T) {
 		WithEndpoint("localhost:4317"),
 		WithServiceName("prod-service"),
 		WithEnvironment("production"),
-		WithShutdownTimeout(50*time.Millisecond),
+		WithShutdownTimeout(5000),
 		WithTraceEnabled(false),
 		WithMetricsEnabled(false),
 	)
@@ -155,7 +155,7 @@ func TestConfig_Defaults_And_Options(t *testing.T) {
 		WithInsecure(false),
 		WithHeaders(headers),
 		WithTraceRatio(0.25),
-		WithShutdownTimeout(3 * time.Second),
+		WithShutdownTimeout(3000),
 		WithLogger(logger),
 	}
 
@@ -172,7 +172,7 @@ func TestConfig_Defaults_And_Options(t *testing.T) {
 		cfg.EnableMetrics != false ||
 		cfg.Insecure != false ||
 		cfg.TraceRatio != 0.25 ||
-		cfg.ShutdownTimeout != 3*time.Second ||
+		cfg.ShutdownTimeout != 3000 ||
 		cfg.Logger != logger {
 		t.Fatalf("options not applied correctly: %+v", cfg)
 	}
@@ -419,7 +419,7 @@ func TestConfig_WithConfig(t *testing.T) {
 		EnableTrace:     true,
 		EnableMetrics:   true,
 		TraceRatio:      0.75,
-		ShutdownTimeout: 10 * time.Second,
+		ShutdownTimeout: 10000,
 	}
 
 	cfg := DefaultConfig()

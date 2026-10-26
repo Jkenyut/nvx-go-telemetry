@@ -51,7 +51,7 @@ stateDiagram-v2
     CheckTraceRatio --> SetDefaultTimeout: ShutdownTimeout <= 0
     CheckTraceRatio --> ValidExit: Valid bounds
 
-    SetDefaultTimeout --> ValidExit: Set ShutdownTimeout to 5s
+    SetDefaultTimeout --> ValidExit: Set ShutdownTimeout to 5000ms
     ValidExit --> [*]: Return nil
 ```
 
@@ -79,7 +79,7 @@ stateDiagram-v2
 | `EnableTrace` | `bool` | `true` | Enables distributed trace recording and export. |
 | `EnableMetrics` | `bool` | `true` | Enables runtime metric recording and export. |
 | `TraceRatio` | `float64` | `1.0` | Sets head-based probabilistic sampling ratio from 0.0 to 1.0. |
-| `ShutdownTimeout` | `time.Duration` | `5s` | Sets the maximum timeout limit for flushing buffers on exit. |
+| `ShutdownTimeout` | `int64` | `5000` | Sets the maximum timeout limit in milliseconds for flushing buffers on exit. |
 | `Logger` | `*slog.Logger` | `slog.Default()` | Sets a custom structured logger for internal telemetry errors. |
 
 ---
@@ -98,7 +98,7 @@ stateDiagram-v2
 | `WithTraceEnabled(enabled)` | `bool` | Enables or disables distributed tracing. |
 | `WithMetricsEnabled(enabled)` | `bool` | Enables or disables metric recording. |
 | `WithTraceRatio(ratio)` | `float64` | Sets the sampling ratio from 0.0 to 1.0. |
-| `WithShutdownTimeout(timeout)` | `time.Duration` | Sets the timeout limit for graceful shutdown flushes. |
+| `WithShutdownTimeout(timeout)` | `int64` | Sets the timeout limit in milliseconds for graceful shutdown flushes. |
 | `WithLogger(logger)` | `*slog.Logger` | Sets a custom logger for internal OpenTelemetry errors. |
 | `WithConfig(cfg)` | `*Config` | Applies settings from an existing configuration struct. |
 
@@ -129,7 +129,7 @@ func main() {
 		telemetry.WithEnvironment("production"),
 		telemetry.WithEndpoint("otel-collector:4317"),
 		telemetry.WithInsecure(false),
-		telemetry.WithShutdownTimeout(10*time.Second),
+		telemetry.WithShutdownTimeout(10000), // in milliseconds (10s)
 	)
 	if err != nil {
 		log.Fatalf("failed to initialize telemetry: %v", err)

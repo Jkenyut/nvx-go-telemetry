@@ -178,7 +178,7 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 				ctx = context.Background()
 			}
 
-			timeout := cfg.ShutdownTimeout
+			timeout := time.Duration(cfg.ShutdownTimeout) * time.Millisecond
 			if timeout <= 0 {
 				timeout = 5 * time.Second
 			}

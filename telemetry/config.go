@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"maps"
 	"strings"
-	"time"
 )
 
 // Config holds the OpenTelemetry configuration.
@@ -21,7 +20,7 @@ type Config struct {
 	EnableTrace     bool              `yaml:"enable_trace" default:"true"`
 	EnableMetrics   bool              `yaml:"enable_metrics" default:"true"`
 	TraceRatio      float64           `yaml:"trace_ratio" default:"1.0"`
-	ShutdownTimeout time.Duration     `yaml:"shutdown_timeout" default:"5s"`
+	ShutdownTimeout int64             `yaml:"shutdown_timeout" default:"5000"` // in milliseconds
 	Logger          *slog.Logger      `yaml:"-"`
 }
 
@@ -99,8 +98,8 @@ func WithTraceRatio(ratio float64) Option {
 	}
 }
 
-// WithShutdownTimeout sets the timeout duration for graceful shutdown.
-func WithShutdownTimeout(timeout time.Duration) Option {
+// WithShutdownTimeout sets the timeout duration in milliseconds for graceful shutdown.
+func WithShutdownTimeout(timeout int64) Option {
 	return func(c *Config) {
 		c.ShutdownTimeout = timeout
 	}
@@ -147,7 +146,7 @@ func DefaultConfig() *Config {
 		EnableTrace:     true,
 		EnableMetrics:   true,
 		TraceRatio:      1.0,
-		ShutdownTimeout: 5 * time.Second,
+		ShutdownTimeout: 5000,
 	}
 }
 
@@ -172,7 +171,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("telemetry trace ratio must be between 0.0 and 1.0, got: %f", c.TraceRatio)
 	}
 	if c.ShutdownTimeout <= 0 {
-		c.ShutdownTimeout = 5 * time.Second
+		c.ShutdownTimeout = 5000
 	}
 	return nil
 }
@@ -186,7 +185,7 @@ func (c *Config) String() string {
 	for k := range c.Headers {
 		redactedHeaders[k] = "[REDACTED]"
 	}
-	return fmt.Sprintf("Config{Enabled:%t, Endpoint:%q, Insecure:%t, ServiceName:%q, Environment:%q, ServiceVersion:%q, EnableTrace:%t, EnableMetrics:%t, TraceRatio:%.2f, ShutdownTimeout:%s, Headers:%v}",
+	return fmt.Sprintf("Config{Enabled:%t, Endpoint:%q, Insecure:%t, ServiceName:%q, Environment:%q, ServiceVersion:%q, EnableTrace:%t, EnableMetrics:%t, TraceRatio:%.2f, ShutdownTimeout:%dms, Headers:%v}",
 		c.Enabled, c.Endpoint, c.Insecure, c.ServiceName, c.Environment, c.ServiceVersion, c.EnableTrace, c.EnableMetrics, c.TraceRatio, c.ShutdownTimeout, redactedHeaders)
 }
 
