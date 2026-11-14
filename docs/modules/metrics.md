@@ -65,11 +65,16 @@ sequenceDiagram
 
 | Function / Method | Parameter Types | Return Types | Operational Role (ASD-STE100) |
 | :--- | :--- | :--- | :--- |
-| `NewMetricManager(name)` | `string` | `*MetricManager` | Creates a new metric manager instance. |
+| `NewMetricManager(name)` | `string` | `*MetricManager` | Creates a new metric manager using the global MeterProvider. |
+| `NewMetricManagerWithMeter(meter)` | `metric.Meter` | `*MetricManager` | Creates a new metric manager with an injected `metric.Meter`. |
 | `RegisterCounter(name, desc, opts...)` | `string`, `string`, `...Option` | `Int64Counter`, `error` | Registers or returns a cached integer counter. |
-| `RegisterUpDownCounter(name, desc, opts...)` | `string`, `string`, `...Option` | `Int64UpDownCounter`, `error` | Registers or returns a cached up-down counter. |
+| `RegisterFloat64Counter(name, desc, opts...)` | `string`, `string`, `...Option` | `Float64Counter`, `error` | Registers or returns a cached float64 counter. |
+| `RegisterUpDownCounter(name, desc, opts...)` | `string`, `string`, `...Option` | `Int64UpDownCounter`, `error` | Registers or returns a cached integer up-down counter. |
+| `RegisterFloat64UpDownCounter(name, desc, opts...)` | `string`, `string`, `...Option` | `Float64UpDownCounter`, `error` | Registers or returns a cached float64 up-down counter. |
 | `RegisterHistogram(name, desc, unit, opts...)` | `string`, `string`, `string`, `...Option` | `Float64Histogram`, `error` | Registers or returns a cached float64 histogram. |
-| `MeasureFunc(name, desc, callback, opts...)` | `string`, `string`, `Int64Callback`, `...Option` | `Int64ObservableGauge`, `error` | Registers a callback to record an observable gauge. |
+| `RegisterInt64Histogram(name, desc, unit, opts...)` | `string`, `string`, `string`, `...Option` | `Int64Histogram`, `error` | Registers or returns a cached int64 histogram. |
+| `MeasureFunc(name, desc, callback, opts...)` | `string`, `string`, `Int64Callback`, `...Option` | `Int64ObservableGauge`, `error` | Registers or returns a cached observable int64 gauge. |
+| `MeasureFloat64Func(name, desc, callback, opts...)` | `string`, `string`, `Float64Callback`, `...Option` | `Float64ObservableGauge`, `error` | Registers or returns a cached observable float64 gauge. |
 | `GetMeter()` | `none` | `metric.Meter` | Returns the underlying OpenTelemetry Meter. |
 
 ---

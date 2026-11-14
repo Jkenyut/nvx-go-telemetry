@@ -10,172 +10,225 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+var (
+	// ErrUninitializedManager indicates a nil MetricManager or missing underlying Meter.
+	ErrUninitializedManager = errors.New("metric manager is uninitialized")
+	// ErrEmptyMetricName indicates an empty or whitespace-only metric instrument name.
+	ErrEmptyMetricName = errors.New("metric name cannot be empty")
+)
+
 // MetricManager provides a wrapper around OpenTelemetry Meter with thread-safe instrument caching.
 type MetricManager struct {
 	metric.Meter
-	mu             sync.RWMutex
-	counters       map[string]metric.Int64Counter
-	upDownCounters map[string]metric.Int64UpDownCounter
-	histograms     map[string]metric.Float64Histogram
+	mu                    sync.RWMutex
+	counters              map[string]metric.Int64Counter
+	floatCounters         map[string]metric.Float64Counter
+	upDownCounters        map[string]metric.Int64UpDownCounter
+	floatUpDownCounters   map[string]metric.Float64UpDownCounter
+	histograms            map[string]metric.Float64Histogram
+	intHistograms         map[string]metric.Int64Histogram
+	observableGauges      map[string]metric.Int64ObservableGauge
+	floatObservableGauges map[string]metric.Float64ObservableGauge
 }
 
-// NewMetricManager creates a new MetricManager.
+// NewMetricManager creates a new MetricManager backed by the global OpenTelemetry MeterProvider.
 func NewMetricManager(instrumentationName string) *MetricManager {
 	if instrumentationName == "" {
 		instrumentationName = "unknown-meter"
 	}
+	return NewMetricManagerWithMeter(otel.Meter(instrumentationName))
+}
+
+// NewMetricManagerWithMeter creates a new MetricManager using the provided metric.Meter.
+// Use this constructor for dependency injection and isolated testing without global state.
+func NewMetricManagerWithMeter(meter metric.Meter) *MetricManager {
 	return &MetricManager{
-		Meter:          otel.Meter(instrumentationName),
-		counters:       make(map[string]metric.Int64Counter),
-		upDownCounters: make(map[string]metric.Int64UpDownCounter),
-		histograms:     make(map[string]metric.Float64Histogram),
+		Meter:                 meter,
+		counters:              make(map[string]metric.Int64Counter),
+		floatCounters:         make(map[string]metric.Float64Counter),
+		upDownCounters:        make(map[string]metric.Int64UpDownCounter),
+		floatUpDownCounters:   make(map[string]metric.Float64UpDownCounter),
+		histograms:            make(map[string]metric.Float64Histogram),
+		intHistograms:         make(map[string]metric.Int64Histogram),
+		observableGauges:      make(map[string]metric.Int64ObservableGauge),
+		floatObservableGauges: make(map[string]metric.Float64ObservableGauge),
 	}
+}
+
+func (m *MetricManager) validate(name string) error {
+	if m == nil || m.Meter == nil {
+		return ErrUninitializedManager
+	}
+	if strings.TrimSpace(name) == "" {
+		return ErrEmptyMetricName
+	}
+	return nil
+}
+
+func getOrRegisterInstrument[T any](
+	m *MetricManager,
+	name string,
+	kind string,
+	cache *map[string]T,
+	create func() (T, error),
+) (T, error) {
+	var zero T
+	m.mu.RLock()
+	if inst, ok := (*cache)[name]; ok {
+		m.mu.RUnlock()
+		return inst, nil
+	}
+	m.mu.RUnlock()
+
+	inst, err := create()
+	if err != nil {
+		return zero, fmt.Errorf("registering %s %q: %w", kind, name, err)
+	}
+
+	m.mu.Lock()
+	if *cache == nil {
+		*cache = make(map[string]T)
+	}
+	if existing, ok := (*cache)[name]; ok {
+		m.mu.Unlock()
+		return existing, nil
+	}
+	(*cache)[name] = inst
+	m.mu.Unlock()
+
+	return inst, nil
 }
 
 // RegisterCounter creates a new integer counter or returns a cached instance.
 func (m *MetricManager) RegisterCounter(name, description string, opts ...metric.Int64CounterOption) (metric.Int64Counter, error) {
-	if m == nil || m.Meter == nil {
-		return nil, errors.New("metric manager is uninitialized")
+	if err := m.validate(name); err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(name) == "" {
-		return nil, errors.New("metric name cannot be empty")
-	}
+	return getOrRegisterInstrument(m, name, "counter", &m.counters, func() (metric.Int64Counter, error) {
+		allOpts := make([]metric.Int64CounterOption, 0, len(opts)+1)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Int64Counter(name, allOpts...)
+	})
+}
 
-	m.mu.RLock()
-	if c, ok := m.counters[name]; ok {
-		m.mu.RUnlock()
-		return c, nil
+// RegisterFloat64Counter creates a new float64 counter or returns a cached instance.
+func (m *MetricManager) RegisterFloat64Counter(name, description string, opts ...metric.Float64CounterOption) (metric.Float64Counter, error) {
+	if err := m.validate(name); err != nil {
+		return nil, err
 	}
-	m.mu.RUnlock()
-
-	allOpts := make([]metric.Int64CounterOption, 0, len(opts)+1)
-	if description != "" {
-		allOpts = append(allOpts, metric.WithDescription(description))
-	}
-	allOpts = append(allOpts, opts...)
-	c, err := m.Int64Counter(name, allOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("registering counter %q: %w", name, err)
-	}
-
-	m.mu.Lock()
-	if m.counters == nil {
-		m.counters = make(map[string]metric.Int64Counter)
-	}
-	if existing, ok := m.counters[name]; ok {
-		m.mu.Unlock()
-		return existing, nil
-	}
-	m.counters[name] = c
-	m.mu.Unlock()
-
-	return c, nil
+	return getOrRegisterInstrument(m, name, "float64 counter", &m.floatCounters, func() (metric.Float64Counter, error) {
+		allOpts := make([]metric.Float64CounterOption, 0, len(opts)+1)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Float64Counter(name, allOpts...)
+	})
 }
 
 // RegisterUpDownCounter creates a new integer up-down counter or returns a cached instance.
 func (m *MetricManager) RegisterUpDownCounter(name, description string, opts ...metric.Int64UpDownCounterOption) (metric.Int64UpDownCounter, error) {
-	if m == nil || m.Meter == nil {
-		return nil, errors.New("metric manager is uninitialized")
+	if err := m.validate(name); err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(name) == "" {
-		return nil, errors.New("metric name cannot be empty")
-	}
+	return getOrRegisterInstrument(m, name, "up-down counter", &m.upDownCounters, func() (metric.Int64UpDownCounter, error) {
+		allOpts := make([]metric.Int64UpDownCounterOption, 0, len(opts)+1)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Int64UpDownCounter(name, allOpts...)
+	})
+}
 
-	m.mu.RLock()
-	if c, ok := m.upDownCounters[name]; ok {
-		m.mu.RUnlock()
-		return c, nil
+// RegisterFloat64UpDownCounter creates a new float64 up-down counter or returns a cached instance.
+func (m *MetricManager) RegisterFloat64UpDownCounter(name, description string, opts ...metric.Float64UpDownCounterOption) (metric.Float64UpDownCounter, error) {
+	if err := m.validate(name); err != nil {
+		return nil, err
 	}
-	m.mu.RUnlock()
-
-	allOpts := make([]metric.Int64UpDownCounterOption, 0, len(opts)+1)
-	if description != "" {
-		allOpts = append(allOpts, metric.WithDescription(description))
-	}
-	allOpts = append(allOpts, opts...)
-	c, err := m.Int64UpDownCounter(name, allOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("registering up-down counter %q: %w", name, err)
-	}
-
-	m.mu.Lock()
-	if m.upDownCounters == nil {
-		m.upDownCounters = make(map[string]metric.Int64UpDownCounter)
-	}
-	if existing, ok := m.upDownCounters[name]; ok {
-		m.mu.Unlock()
-		return existing, nil
-	}
-	m.upDownCounters[name] = c
-	m.mu.Unlock()
-
-	return c, nil
+	return getOrRegisterInstrument(m, name, "float64 up-down counter", &m.floatUpDownCounters, func() (metric.Float64UpDownCounter, error) {
+		allOpts := make([]metric.Float64UpDownCounterOption, 0, len(opts)+1)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Float64UpDownCounter(name, allOpts...)
+	})
 }
 
 // RegisterHistogram creates a new float64 histogram or returns a cached instance.
 func (m *MetricManager) RegisterHistogram(name, description, unit string, opts ...metric.Float64HistogramOption) (metric.Float64Histogram, error) {
-	if m == nil || m.Meter == nil {
-		return nil, errors.New("metric manager is uninitialized")
+	if err := m.validate(name); err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(name) == "" {
-		return nil, errors.New("metric name cannot be empty")
-	}
-
-	m.mu.RLock()
-	if h, ok := m.histograms[name]; ok {
-		m.mu.RUnlock()
-		return h, nil
-	}
-	m.mu.RUnlock()
-
-	allOpts := make([]metric.Float64HistogramOption, 0, len(opts)+2)
-	if description != "" {
-		allOpts = append(allOpts, metric.WithDescription(description))
-	}
-	if unit != "" {
-		allOpts = append(allOpts, metric.WithUnit(unit))
-	}
-	allOpts = append(allOpts, opts...)
-	h, err := m.Float64Histogram(name, allOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("registering histogram %q: %w", name, err)
-	}
-
-	m.mu.Lock()
-	if m.histograms == nil {
-		m.histograms = make(map[string]metric.Float64Histogram)
-	}
-	if existing, ok := m.histograms[name]; ok {
-		m.mu.Unlock()
-		return existing, nil
-	}
-	m.histograms[name] = h
-	m.mu.Unlock()
-
-	return h, nil
+	return getOrRegisterInstrument(m, name, "histogram", &m.histograms, func() (metric.Float64Histogram, error) {
+		allOpts := make([]metric.Float64HistogramOption, 0, len(opts)+2)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		if unit != "" {
+			allOpts = append(allOpts, metric.WithUnit(unit))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Float64Histogram(name, allOpts...)
+	})
 }
 
-// MeasureFunc registers a callback to record an observable gauge.
+// RegisterInt64Histogram creates a new int64 histogram or returns a cached instance.
+func (m *MetricManager) RegisterInt64Histogram(name, description, unit string, opts ...metric.Int64HistogramOption) (metric.Int64Histogram, error) {
+	if err := m.validate(name); err != nil {
+		return nil, err
+	}
+	return getOrRegisterInstrument(m, name, "int64 histogram", &m.intHistograms, func() (metric.Int64Histogram, error) {
+		allOpts := make([]metric.Int64HistogramOption, 0, len(opts)+2)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		if unit != "" {
+			allOpts = append(allOpts, metric.WithUnit(unit))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Int64Histogram(name, allOpts...)
+	})
+}
+
+// MeasureFunc registers a callback to record an observable int64 gauge or returns a cached instance.
 func (m *MetricManager) MeasureFunc(name, description string, callback metric.Int64Callback, opts ...metric.Int64ObservableGaugeOption) (metric.Int64ObservableGauge, error) {
-	if m == nil || m.Meter == nil {
-		return nil, errors.New("metric manager is uninitialized")
+	if err := m.validate(name); err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(name) == "" {
-		return nil, errors.New("metric name cannot be empty")
+	return getOrRegisterInstrument(m, name, "observable gauge", &m.observableGauges, func() (metric.Int64ObservableGauge, error) {
+		allOpts := make([]metric.Int64ObservableGaugeOption, 0, len(opts)+2)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		if callback != nil {
+			allOpts = append(allOpts, metric.WithInt64Callback(callback))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Int64ObservableGauge(name, allOpts...)
+	})
+}
+
+// MeasureFloat64Func registers a callback to record an observable float64 gauge or returns a cached instance.
+func (m *MetricManager) MeasureFloat64Func(name, description string, callback metric.Float64Callback, opts ...metric.Float64ObservableGaugeOption) (metric.Float64ObservableGauge, error) {
+	if err := m.validate(name); err != nil {
+		return nil, err
 	}
-	allOpts := make([]metric.Int64ObservableGaugeOption, 0, len(opts)+2)
-	if description != "" {
-		allOpts = append(allOpts, metric.WithDescription(description))
-	}
-	if callback != nil {
-		allOpts = append(allOpts, metric.WithInt64Callback(callback))
-	}
-	allOpts = append(allOpts, opts...)
-	g, err := m.Int64ObservableGauge(name, allOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("registering observable gauge %q: %w", name, err)
-	}
-	return g, nil
+	return getOrRegisterInstrument(m, name, "float64 observable gauge", &m.floatObservableGauges, func() (metric.Float64ObservableGauge, error) {
+		allOpts := make([]metric.Float64ObservableGaugeOption, 0, len(opts)+2)
+		if description != "" {
+			allOpts = append(allOpts, metric.WithDescription(description))
+		}
+		if callback != nil {
+			allOpts = append(allOpts, metric.WithFloat64Callback(callback))
+		}
+		allOpts = append(allOpts, opts...)
+		return m.Float64ObservableGauge(name, allOpts...)
+	})
 }
 
 // GetMeter returns the underlying OpenTelemetry Meter.

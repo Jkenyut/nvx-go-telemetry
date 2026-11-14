@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"strings"
@@ -10,6 +11,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -31,37 +34,44 @@ func TestInit_Disabled(t *testing.T) {
 func TestInit_InvalidConfig(t *testing.T) {
 	// Nil config validation
 	var nilCfg *Config
-	if err := nilCfg.Validate(); err == nil {
-		t.Fatalf("expected error for nil config Validate()")
+	if err := nilCfg.Validate(); !errors.Is(err, ErrNilConfig) {
+		t.Fatalf("expected ErrNilConfig for nil config Validate(), got: %v", err)
 	}
 
 	// Empty endpoint
 	_, err := Init(context.Background(), WithEnabled(true), WithEndpoint(""))
-	if err == nil {
-		t.Fatalf("expected error for empty endpoint")
+	if !errors.Is(err, ErrEmptyEndpoint) {
+		t.Fatalf("expected ErrEmptyEndpoint, got: %v", err)
 	}
 
 	// Endpoint with scheme
 	_, err = Init(context.Background(), WithEnabled(true), WithEndpoint("http://localhost:4317"))
-	if err == nil || !strings.Contains(err.Error(), "must not contain a URL scheme") {
-		t.Fatalf("expected URL scheme rejection error, got: %v", err)
+	if !errors.Is(err, ErrEndpointWithScheme) || !strings.Contains(err.Error(), "must not contain a URL scheme") {
+		t.Fatalf("expected ErrEndpointWithScheme rejection error, got: %v", err)
 	}
 
 	// Empty service name
 	_, err = Init(context.Background(), WithEnabled(true), WithServiceName(""))
-	if err == nil {
-		t.Fatalf("expected error for empty service name")
+	if !errors.Is(err, ErrEmptyServiceName) {
+		t.Fatalf("expected ErrEmptyServiceName, got: %v", err)
 	}
 
 	// Invalid trace ratio
 	_, err = Init(context.Background(), WithEnabled(true), WithTraceRatio(1.5))
-	if err == nil {
-		t.Fatalf("expected error for trace ratio > 1.0")
+	if !errors.Is(err, ErrInvalidTraceRatio) {
+		t.Fatalf("expected ErrInvalidTraceRatio for trace ratio > 1.0, got: %v", err)
 	}
 	_, err = Init(context.Background(), WithEnabled(true), WithTraceRatio(-0.1))
-	if err == nil {
-		t.Fatalf("expected error for trace ratio < 0.0")
+	if !errors.Is(err, ErrInvalidTraceRatio) {
+		t.Fatalf("expected ErrInvalidTraceRatio for trace ratio < 0.0, got: %v", err)
 	}
+
+	// Nil option should be safely ignored
+	shutdown, err := Init(context.Background(), nil, WithEnabled(false))
+	if err != nil || shutdown == nil {
+		t.Fatalf("expected nil option to be ignored safely, got err=%v", err)
+	}
+	_ = shutdown(context.Background())
 
 	// Shutdown timeout default reset on zero or negative
 	cfg := DefaultConfig()
@@ -337,39 +347,85 @@ func TestMetrics_Operations(t *testing.T) {
 		t.Fatalf("expected non-nil observable gauge")
 	}
 
-	// 6. Nil MetricManager safety
+	// 6. Nil MetricManager & uninitialized Meter safety
 	var nilMM *MetricManager
 	if nilMM.GetMeter() != nil {
 		t.Fatalf("expected nil meter from nil MetricManager")
 	}
-	if _, err := nilMM.RegisterCounter("c", "d"); err == nil {
-		t.Fatalf("expected error when registering counter on nil MetricManager")
+	if _, err := nilMM.RegisterCounter("c", "d"); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
 	}
-	if _, err := nilMM.RegisterUpDownCounter("u", "d"); err == nil {
-		t.Fatalf("expected error when registering up-down counter on nil MetricManager")
+	if _, err := nilMM.RegisterFloat64Counter("fc", "d"); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
 	}
-	if _, err := nilMM.RegisterHistogram("h", "d", "u"); err == nil {
-		t.Fatalf("expected error when registering histogram on nil MetricManager")
+	if _, err := nilMM.RegisterUpDownCounter("u", "d"); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
 	}
-	if _, err := nilMM.MeasureFunc("g", "d", nil); err == nil {
-		t.Fatalf("expected error when measuring func on nil MetricManager")
+	if _, err := nilMM.RegisterFloat64UpDownCounter("fu", "d"); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
+	}
+	if _, err := nilMM.RegisterHistogram("h", "d", "u"); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
+	}
+	if _, err := nilMM.RegisterInt64Histogram("ih", "d", "u"); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
+	}
+	if _, err := nilMM.MeasureFunc("g", "d", nil); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
+	}
+	if _, err := nilMM.MeasureFloat64Func("fg", "d", nil); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager, got: %v", err)
+	}
+
+	uninitMM := NewMetricManagerWithMeter(nil)
+	if _, err := uninitMM.RegisterCounter("c", "d"); !errors.Is(err, ErrUninitializedManager) {
+		t.Fatalf("expected ErrUninitializedManager for nil meter, got: %v", err)
 	}
 
 	// 7. Empty name validation
-	if _, err := mm.RegisterCounter("", "empty name"); err == nil {
-		t.Fatalf("expected error registering counter with empty name")
+	if _, err := mm.RegisterCounter("", "empty name"); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering counter, got: %v", err)
 	}
-	if _, err := mm.RegisterUpDownCounter("", "empty name"); err == nil {
-		t.Fatalf("expected error registering up-down counter with empty name")
+	if _, err := mm.RegisterFloat64Counter("   ", "empty name"); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering float64 counter, got: %v", err)
 	}
-	if _, err := mm.RegisterHistogram("", "empty name", "s"); err == nil {
-		t.Fatalf("expected error registering histogram with empty name")
+	if _, err := mm.RegisterUpDownCounter("", "empty name"); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering up-down counter, got: %v", err)
 	}
-	if _, err := mm.MeasureFunc("", "empty name", nil); err == nil {
-		t.Fatalf("expected error registering gauge with empty name")
+	if _, err := mm.RegisterFloat64UpDownCounter("", "empty name"); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering float64 up-down counter, got: %v", err)
+	}
+	if _, err := mm.RegisterHistogram("", "empty name", "s"); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering histogram, got: %v", err)
+	}
+	if _, err := mm.RegisterInt64Histogram("", "empty name", "ms"); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering int64 histogram, got: %v", err)
+	}
+	if _, err := mm.MeasureFunc("", "empty name", nil); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering gauge, got: %v", err)
+	}
+	if _, err := mm.MeasureFloat64Func("", "empty name", nil); !errors.Is(err, ErrEmptyMetricName) {
+		t.Fatalf("expected ErrEmptyMetricName registering float64 gauge, got: %v", err)
 	}
 
-	// 8. Test Instrument Caching Idempotency
+	// 8. Test Instrument Caching Idempotency (including MeasureFunc)
+	g1, err := mm.MeasureFunc("cached_gauge", "desc", func(_ context.Context, obs metric.Int64Observer) error {
+		obs.Observe(42)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	g2, err := mm.MeasureFunc("cached_gauge", "desc", func(_ context.Context, obs metric.Int64Observer) error {
+		obs.Observe(99)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if g1 != g2 {
+		t.Fatalf("expected cached observable gauge instance, got different pointers")
+	}
 	c1, err := mm.RegisterCounter("cached_counter", "desc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -462,6 +518,254 @@ func TestInit_Concurrent(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		if err := <-errCh; err != nil {
 			t.Fatalf("concurrent Init failed: %v", err)
+		}
+	}
+}
+
+func TestConfig_EnvOverrides(t *testing.T) {
+	t.Setenv("OTEL_ENABLED", "false")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "false")
+	t.Setenv("OTEL_SERVICE_NAME", "env-service")
+	t.Setenv("OTEL_ENVIRONMENT", "staging")
+	t.Setenv("OTEL_SERVICE_VERSION", "v9.9.9")
+	t.Setenv("OTEL_ENABLE_TRACE", "false")
+	t.Setenv("OTEL_ENABLE_METRICS", "false")
+	t.Setenv("OTEL_TRACE_RATIO", "0.42")
+	t.Setenv("OTEL_SHUTDOWN_TIMEOUT", "7s")
+
+	cfg := DefaultConfig()
+	if cfg.Enabled != false ||
+		cfg.Endpoint != "otel-collector:4317" ||
+		cfg.Insecure != false ||
+		cfg.ServiceName != "env-service" ||
+		cfg.Environment != "staging" ||
+		cfg.ServiceVersion != "v9.9.9" ||
+		cfg.EnableTrace != false ||
+		cfg.EnableMetrics != false ||
+		cfg.TraceRatio != 0.42 ||
+		cfg.ShutdownTimeout != 7000 {
+		t.Fatalf("env overrides not applied properly: %+v", cfg)
+	}
+
+	// Verify integer millisecond format and graceful ignoring of invalid env values
+	t.Setenv("OTEL_SHUTDOWN_TIMEOUT", "3500")
+	t.Setenv("OTEL_TRACE_RATIO", "not-a-float")
+	t.Setenv("OTEL_ENABLED", "invalid-bool")
+	cfg2 := DefaultConfig()
+	if cfg2.ShutdownTimeout != 3500 {
+		t.Fatalf("expected 3500ms shutdown timeout, got %d", cfg2.ShutdownTimeout)
+	}
+	if cfg2.TraceRatio != 1.0 {
+		t.Fatalf("expected default trace ratio 1.0 on invalid env, got %f", cfg2.TraceRatio)
+	}
+	if cfg2.Enabled != true {
+		t.Fatalf("expected default enabled=true on invalid env, got %v", cfg2.Enabled)
+	}
+}
+
+func TestConfig_TLSAndCompression(t *testing.T) {
+	origTLS := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ServerName: "otel.example.internal",
+	}
+
+	cfg := DefaultConfig()
+	WithTLSConfig(origTLS)(cfg)
+	WithCompression("gzip")(cfg)
+
+	if cfg.Insecure {
+		t.Fatal("expected WithTLSConfig to disable Insecure")
+	}
+	if cfg.TLSConfig == nil || cfg.TLSConfig.ServerName != "otel.example.internal" {
+		t.Fatalf("unexpected TLSConfig: %+v", cfg.TLSConfig)
+	}
+	if cfg.Compression != "gzip" {
+		t.Fatalf("expected compression gzip, got %q", cfg.Compression)
+	}
+
+	// Verify defensive clone of TLSConfig
+	origTLS.ServerName = "tampered.internal"
+	if cfg.TLSConfig.ServerName != "otel.example.internal" {
+		t.Fatalf("expected cloned TLSConfig, got %q", cfg.TLSConfig.ServerName)
+	}
+
+	// Verify WithConfig clones TLSConfig and copies Compression
+	copied := DefaultConfig()
+	WithConfig(cfg)(copied)
+	if copied.TLSConfig == nil || copied.TLSConfig == cfg.TLSConfig || copied.Compression != "gzip" {
+		t.Fatalf("expected WithConfig to clone TLSConfig and copy Compression")
+	}
+
+	// Verify WithTLSConfig(nil) clears TLSConfig
+	WithTLSConfig(nil)(cfg)
+	if cfg.TLSConfig != nil {
+		t.Fatal("expected nil TLSConfig after WithTLSConfig(nil)")
+	}
+
+	// Verify Init succeeds with custom TLSConfig + gzip compression
+	shutdown1, err := Init(context.Background(),
+		WithEndpoint("localhost:4317"),
+		WithServiceName("tls-service"),
+		WithEnvironment("production"),
+		WithServiceVersion("v1.0.0"),
+		WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13}),
+		WithCompression("gzip"),
+		WithShutdownTimeout(100),
+	)
+	if err != nil {
+		t.Fatalf("expected Init with custom TLSConfig to succeed, got: %v", err)
+	}
+	_ = shutdown1(context.Background())
+
+	// Verify Init succeeds with system root TLS (Insecure=false, TLSConfig=nil) and compression="none"
+	shutdown2, err := Init(context.Background(),
+		WithEndpoint("localhost:4317"),
+		WithServiceName("system-tls-service"),
+		WithInsecure(false),
+		WithCompression("none"),
+		WithShutdownTimeout(100),
+	)
+	if err != nil {
+		t.Fatalf("expected Init with system root TLS to succeed, got: %v", err)
+	}
+	_ = shutdown2(context.Background())
+}
+
+func TestInit_ReinitializationShutdown(t *testing.T) {
+	// First Init intentionally without calling shutdown yet
+	s1, err := Init(context.Background(),
+		WithServiceName("reinit-svc-1"),
+		WithTraceEnabled(true),
+		WithMetricsEnabled(true),
+		WithShutdownTimeout(100),
+	)
+	if err != nil {
+		t.Fatalf("first Init failed: %v", err)
+	}
+
+	// Second Init should cleanly shut down previous providers before registering new ones
+	s2, err := Init(context.Background(),
+		WithServiceName("reinit-svc-2"),
+		WithTraceEnabled(false),
+		WithMetricsEnabled(false),
+		WithShutdownTimeout(100),
+	)
+	if err != nil {
+		t.Fatalf("second Init failed: %v", err)
+	}
+
+	// Calling s1 afterwards must remain safe and idempotent
+	_ = s1(context.Background())
+	if err := s2(context.Background()); err != nil {
+		t.Fatalf("second shutdown failed: %v", err)
+	}
+}
+
+func TestMetrics_EndToEnd_WithManualReader(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = mp.Shutdown(context.Background()) }()
+
+	mm := NewMetricManagerWithMeter(mp.Meter("e2e-meter"))
+
+	ctx := context.Background()
+
+	ic, err := mm.RegisterCounter("e2e_int_counter", "int counter")
+	if err != nil {
+		t.Fatalf("RegisterCounter failed: %v", err)
+	}
+	ic.Add(ctx, 3)
+
+	fc1, err := mm.RegisterFloat64Counter("e2e_float_counter", "float counter")
+	if err != nil {
+		t.Fatalf("RegisterFloat64Counter failed: %v", err)
+	}
+	fc2, err := mm.RegisterFloat64Counter("e2e_float_counter", "float counter")
+	if err != nil || fc1 != fc2 {
+		t.Fatalf("expected cached Float64Counter, err=%v", err)
+	}
+	fc1.Add(ctx, 1.5)
+
+	iu, err := mm.RegisterUpDownCounter("e2e_int_updown", "int updown")
+	if err != nil {
+		t.Fatalf("RegisterUpDownCounter failed: %v", err)
+	}
+	iu.Add(ctx, 2)
+
+	fu1, err := mm.RegisterFloat64UpDownCounter("e2e_float_updown", "float updown")
+	if err != nil {
+		t.Fatalf("RegisterFloat64UpDownCounter failed: %v", err)
+	}
+	fu2, err := mm.RegisterFloat64UpDownCounter("e2e_float_updown", "float updown")
+	if err != nil || fu1 != fu2 {
+		t.Fatalf("expected cached Float64UpDownCounter, err=%v", err)
+	}
+	fu1.Add(ctx, -0.5)
+
+	fh, err := mm.RegisterHistogram("e2e_float_hist", "float hist", "s")
+	if err != nil {
+		t.Fatalf("RegisterHistogram failed: %v", err)
+	}
+	fh.Record(ctx, 0.25)
+
+	ih1, err := mm.RegisterInt64Histogram("e2e_int_hist", "int hist", "ms")
+	if err != nil {
+		t.Fatalf("RegisterInt64Histogram failed: %v", err)
+	}
+	ih2, err := mm.RegisterInt64Histogram("e2e_int_hist", "int hist", "ms")
+	if err != nil || ih1 != ih2 {
+		t.Fatalf("expected cached Int64Histogram, err=%v", err)
+	}
+	ih1.Record(ctx, 45)
+
+	if _, err := mm.MeasureFunc("e2e_int_gauge", "int gauge", func(_ context.Context, obs metric.Int64Observer) error {
+		obs.Observe(10)
+		return nil
+	}); err != nil {
+		t.Fatalf("MeasureFunc failed: %v", err)
+	}
+
+	fg1, err := mm.MeasureFloat64Func("e2e_float_gauge", "float gauge", func(_ context.Context, obs metric.Float64Observer) error {
+		obs.Observe(3.14)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("MeasureFloat64Func failed: %v", err)
+	}
+	fg2, err := mm.MeasureFloat64Func("e2e_float_gauge", "float gauge", nil)
+	if err != nil || fg1 != fg2 {
+		t.Fatalf("expected cached Float64ObservableGauge, err=%v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("ManualReader.Collect failed: %v", err)
+	}
+	if len(rm.ScopeMetrics) == 0 {
+		t.Fatal("expected collected ScopeMetrics")
+	}
+
+	collected := make(map[string]bool)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			collected[m.Name] = true
+		}
+	}
+
+	expected := []string{
+		"e2e_int_counter",
+		"e2e_float_counter",
+		"e2e_int_updown",
+		"e2e_float_updown",
+		"e2e_float_hist",
+		"e2e_int_hist",
+		"e2e_int_gauge",
+		"e2e_float_gauge",
+	}
+	for _, name := range expected {
+		if !collected[name] {
+			t.Errorf("expected metric %q to be collected", name)
 		}
 	}
 }

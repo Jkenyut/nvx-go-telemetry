@@ -16,11 +16,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: 'go.mod'
           check-latest: true
 
       - name: Verify Dependencies
         run: go mod verify
+
+      - name: Check Formatting
+        run: test -z "$(gofmt -l .)"
 
       - name: Run Vet
         run: go vet ./...

@@ -16,10 +16,14 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"google.golang.org/grpc/credentials"
 )
 
-var initMu sync.Mutex
+var (
+	initMu         sync.Mutex
+	activeShutdown func(context.Context) error
+)
 
 // Init sets up OpenTelemetry providers based on the provided options.
 // It returns an idempotent shutdown function that should be deferred to ensure data is flushed.
@@ -33,7 +37,9 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 
 	cfg := DefaultConfig()
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -45,34 +51,42 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		return func(context.Context) error { return nil }, nil
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	var shutdownFuncs []func(context.Context) error
 
 	cleanup := func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		for i := len(shutdownFuncs) - 1; i >= 0; i-- {
-			_ = shutdownFuncs[i](cleanupCtx)
+			if err := shutdownFuncs[i](cleanupCtx); err != nil {
+				logger.Warn("telemetry cleanup shutdown warning", "error", err)
+			}
 		}
 	}
 
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	attrs := []attribute.KeyValue{
-		semconv.ServiceNameKey.String(cfg.ServiceName),
-	}
+	attrs := make([]attribute.KeyValue, 0, 4)
+	attrs = append(attrs, semconv.ServiceNameKey.String(cfg.ServiceName))
 	if cfg.Environment != "" {
-		attrs = append(attrs, semconv.DeploymentEnvironmentKey.String(cfg.Environment))
+		attrs = append(attrs,
+			semconv.DeploymentEnvironmentNameKey.String(cfg.Environment),
+			attribute.String("deployment.environment", cfg.Environment),
+		)
 	}
 	if cfg.ServiceVersion != "" {
 		attrs = append(attrs, semconv.ServiceVersionKey.String(cfg.ServiceVersion))
 	}
 
 	res, err := resource.New(ctx,
-		resource.WithFromEnv(), // Allow injecting OTEL_RESOURCE_ATTRIBUTES from env
-		resource.WithProcess(), // Include process information (PID, etc)
+		resource.WithSchemaURL(semconv.SchemaURL),
+		resource.WithFromEnv(),
+		resource.WithTelemetrySDK(),
+		resource.WithHost(),
+		resource.WithOS(),
+		resource.WithProcess(),
 		resource.WithAttributes(attrs...),
 	)
 	if err != nil {
@@ -81,6 +95,15 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		} else {
 			cleanup()
 			return nil, fmt.Errorf("creating otel resource: %w", err)
+		}
+	}
+
+	var tlsCreds credentials.TransportCredentials
+	if !cfg.Insecure {
+		if cfg.TLSConfig != nil {
+			tlsCreds = credentials.NewTLS(cfg.TLSConfig.Clone())
+		} else {
+			tlsCreds = credentials.NewClientTLSFromCert(nil, "")
 		}
 	}
 
@@ -93,9 +116,14 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Endpoint)}
 		if cfg.Insecure {
 			traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+		} else {
+			traceOpts = append(traceOpts, otlptracegrpc.WithTLSCredentials(tlsCreds))
 		}
 		if len(cfg.Headers) > 0 {
 			traceOpts = append(traceOpts, otlptracegrpc.WithHeaders(cfg.Headers))
+		}
+		if cfg.Compression != "" && cfg.Compression != "none" {
+			traceOpts = append(traceOpts, otlptracegrpc.WithCompressor(cfg.Compression))
 		}
 		traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 		if err != nil {
@@ -129,9 +157,14 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.Endpoint)}
 		if cfg.Insecure {
 			metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+		} else {
+			metricOpts = append(metricOpts, otlpmetricgrpc.WithTLSCredentials(tlsCreds))
 		}
 		if len(cfg.Headers) > 0 {
 			metricOpts = append(metricOpts, otlpmetricgrpc.WithHeaders(cfg.Headers))
+		}
+		if cfg.Compression != "" && cfg.Compression != "none" {
+			metricOpts = append(metricOpts, otlpmetricgrpc.WithCompressor(cfg.Compression))
 		}
 		metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 		if err != nil {
@@ -150,6 +183,15 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 			sdkmetric.WithReader(metricReader),
 		)
 		shutdownFuncs = append(shutdownFuncs, meterProvider.Shutdown)
+	}
+
+	// Shut down any previously registered providers before swapping globals to prevent goroutine leaks.
+	if activeShutdown != nil {
+		prevCtx, prevCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if prevErr := activeShutdown(prevCtx); prevErr != nil {
+			logger.Warn("previous telemetry provider shutdown warning", "error", prevErr)
+		}
+		prevCancel()
 	}
 
 	// Register global handlers only after all exporters and providers are successfully constructed
@@ -201,5 +243,6 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 		return shutdownErr
 	}
 
+	activeShutdown = shutdown
 	return shutdown, nil
 }

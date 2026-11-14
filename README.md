@@ -356,7 +356,9 @@ The table summarizes all primary library functions and methods across core modul
 | :--- | :--- | :--- |
 | `telemetry.Init(ctx, opts...)` | Core Lifecycle | Initializes providers and returns shutdown handler. |
 | `telemetry.WithConfig(cfg)` | Configuration | Applies settings from an existing Config struct. |
-| `telemetry.DefaultConfig()` | Configuration | Returns standard configuration defaults. |
+| `telemetry.WithTLSConfig(tlsCfg)` | Configuration | Applies custom TLS credentials and disables insecure mode. |
+| `telemetry.WithCompression(alg)` | Configuration | Sets gRPC compression algorithm (`"gzip"` or `"none"`). |
+| `telemetry.DefaultConfig()` | Configuration | Returns default configuration with `OTEL_*` environment overrides. |
 | `telemetry.Tracer(name)` | Tracing | Returns a named OpenTelemetry tracer. |
 | `telemetry.Start(ctx, tracer, span)` | Tracing | Starts a child span with context. |
 | `telemetry.RecordError(span, err)` | Tracing | Records an error event and sets error status. |
@@ -370,11 +372,16 @@ The table summarizes all primary library functions and methods across core modul
 | `telemetry.ExtractAnyMap(ctx, map)` | Propagation | Extracts trace context from messaging map headers. |
 | `telemetry.InjectAMQP(ctx, map)` | Propagation | Acts as an alias for `InjectAnyMap`. |
 | `telemetry.ExtractAMQP(ctx, map)` | Propagation | Acts as an alias for `ExtractAnyMap`. |
-| `telemetry.NewMetricManager(name)` | Metrics | Instantiates metric registry wrapper with cached instruments. |
+| `telemetry.NewMetricManager(name)` | Metrics | Instantiates metric registry wrapper using global MeterProvider. |
+| `telemetry.NewMetricManagerWithMeter(meter)` | Metrics | Instantiates metric registry wrapper with an injected `metric.Meter`. |
 | `mm.RegisterCounter(name, desc)` | Metrics | Registers or retrieves a cached integer counter. |
-| `mm.RegisterUpDownCounter(name, desc)` | Metrics | Registers or retrieves a cached up-down counter. |
+| `mm.RegisterFloat64Counter(name, desc)` | Metrics | Registers or retrieves a cached float64 counter. |
+| `mm.RegisterUpDownCounter(name, desc)` | Metrics | Registers or retrieves a cached integer up-down counter. |
+| `mm.RegisterFloat64UpDownCounter(name, desc)` | Metrics | Registers or retrieves a cached float64 up-down counter. |
 | `mm.RegisterHistogram(name, desc, unit)` | Metrics | Registers or retrieves a cached float64 histogram. |
-| `mm.MeasureFunc(name, desc, callback)` | Metrics | Registers a callback to record an observable gauge. |
+| `mm.RegisterInt64Histogram(name, desc, unit)` | Metrics | Registers or retrieves a cached int64 histogram. |
+| `mm.MeasureFunc(name, desc, callback)` | Metrics | Registers or retrieves a cached observable int64 gauge. |
+| `mm.MeasureFloat64Func(name, desc, callback)` | Metrics | Registers or retrieves a cached observable float64 gauge. |
 
 Detailed operational guides are available in the module references:
 - [Context Propagation Guide](docs/modules/carrier.md)

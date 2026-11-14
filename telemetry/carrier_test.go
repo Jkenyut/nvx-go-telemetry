@@ -66,9 +66,56 @@ func TestCarrierHTTPAndAnyMap(t *testing.T) {
 		t.Errorf("expected byte slice trace ID %s, got %s", traceID, TraceID(extractedByteCtx))
 	}
 
-	// 4. Test Nil Safety
+	// 4. Test Nil Safety & Edge Cases
 	InjectHTTP(nil, nil)
+	InjectHTTP(ctx, nil)
 	_ = ExtractHTTP(nil, nil)
+	_ = ExtractHTTP(ctx, nil)
 	_ = InjectAnyMap(nil, nil)
+	injectedNilMap := InjectAnyMap(ctx, nil)
+	if injectedNilMap["traceparent"] == nil {
+		t.Error("expected InjectAnyMap with nil map to allocate and populate traceparent")
+	}
 	_ = ExtractAnyMap(nil, nil)
+	_ = ExtractAnyMap(ctx, nil)
+
+	var nilCarrier AnyMapCarrier
+	if nilCarrier.Get("traceparent") != "" {
+		t.Error("expected empty string from nil AnyMapCarrier.Get")
+	}
+	nilCarrier.Set("traceparent", "val")
+	if nilCarrier.Keys() != nil {
+		t.Error("expected nil keys from nil AnyMapCarrier.Keys")
+	}
+
+	nonStringCarrier := AnyMapCarrier{
+		"num":         123,
+		"Traceparent": 456,
+	}
+	if nonStringCarrier.Get("num") != "" || nonStringCarrier.Get("traceparent") != "" {
+		t.Error("expected empty string for non-string/non-byte carrier values")
+	}
+
+	keys := AnyMapCarrier(table).Keys()
+	if len(keys) == 0 {
+		t.Error("expected non-empty keys from AnyMapCarrier.Keys")
+	}
+
+	// 5. Test Alias Helpers (InjectHTTPHeader, ExtractHTTPHeader, InjectAMQP, ExtractAMQP)
+	aliasReq, _ := http.NewRequest("GET", "http://localhost", nil)
+	InjectHTTPHeader(ctx, aliasReq.Header)
+	if aliasReq.Header.Get("traceparent") == "" {
+		t.Error("expected traceparent via InjectHTTPHeader")
+	}
+	if got := TraceID(ExtractHTTPHeader(context.Background(), aliasReq.Header)); got != traceID {
+		t.Errorf("expected trace ID %s via ExtractHTTPHeader, got %s", traceID, got)
+	}
+
+	amqpHeaders := InjectAMQP(ctx, nil)
+	if amqpHeaders["traceparent"] == nil {
+		t.Error("expected traceparent via InjectAMQP")
+	}
+	if got := TraceID(ExtractAMQP(context.Background(), amqpHeaders)); got != traceID {
+		t.Errorf("expected trace ID %s via ExtractAMQP, got %s", traceID, got)
+	}
 }

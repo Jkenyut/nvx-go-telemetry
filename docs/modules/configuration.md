@@ -72,6 +72,8 @@ stateDiagram-v2
 | `Enabled` | `bool` | `true` | Enables or disables OpenTelemetry operations. |
 | `Endpoint` | `string` | `"localhost:4317"` | Sets the OTLP gRPC collector target host and port. |
 | `Insecure` | `bool` | `true` | Connects to the OTLP endpoint without transport encryption. |
+| `TLSConfig` | `*tls.Config` | `nil` | Sets custom TLS credentials for encrypted OTLP gRPC connections. |
+| `Compression` | `string` | `"gzip"` | Sets the OTLP gRPC compression algorithm (`"gzip"` or `"none"`). |
 | `Headers` | `map[string]string` | `nil` | Sets custom headers for authentication with OTLP collectors. |
 | `ServiceName` | `string` | `"nvx-go-telemetry"` | Sets the logical service name attribute. |
 | `Environment` | `string` | `""` | Sets the deployment environment attribute. |
@@ -91,6 +93,8 @@ stateDiagram-v2
 | `WithEnabled(enabled)` | `bool` | Enables or disables telemetry operations. |
 | `WithEndpoint(endpoint)` | `string` | Sets the OTLP gRPC endpoint address. |
 | `WithInsecure(insecure)` | `bool` | Disables TLS transport encryption when connecting to collectors. |
+| `WithTLSConfig(tlsCfg)` | `*tls.Config` | Sets cloned custom TLS configuration and disables insecure transport. |
+| `WithCompression(alg)` | `string` | Sets gRPC exporter compression (such as `"gzip"` or `"none"`). |
 | `WithHeaders(headers)` | `map[string]string` | Sets OTLP request headers with defensive map copying. |
 | `WithServiceName(name)` | `string` | Sets the service name attribute. |
 | `WithEnvironment(env)` | `string` | Sets the deployment environment attribute. |
