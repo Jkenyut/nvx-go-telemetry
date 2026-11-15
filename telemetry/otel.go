@@ -144,11 +144,7 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 			sdktrace.WithResource(res),
 			sdktrace.WithSpanProcessor(bsp),
 			// Explicit span limits to prevent OOM
-			sdktrace.WithRawSpanLimits(sdktrace.SpanLimits{
-				AttributeCountLimit: 128,
-				EventCountLimit:     128,
-				LinkCountLimit:      128,
-			}),
+			sdktrace.WithRawSpanLimits(defaultSpanLimits()),
 		)
 		shutdownFuncs = append(shutdownFuncs, tracerProvider.Shutdown)
 	}
@@ -245,4 +241,14 @@ func Init(ctx context.Context, opts ...Option) (func(context.Context) error, err
 
 	activeShutdown = shutdown
 	return shutdown, nil
+}
+
+const defaultAttributeValueLengthLimit = 4096
+
+func defaultSpanLimits() sdktrace.SpanLimits {
+	limits := sdktrace.NewSpanLimits()
+	if limits.AttributeValueLengthLimit < 0 {
+		limits.AttributeValueLengthLimit = defaultAttributeValueLengthLimit
+	}
+	return limits
 }

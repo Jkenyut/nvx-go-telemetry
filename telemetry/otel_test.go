@@ -14,6 +14,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestInit_Disabled(t *testing.T) {
@@ -767,5 +768,50 @@ func TestMetrics_EndToEnd_WithManualReader(t *testing.T) {
 		if !collected[name] {
 			t.Errorf("expected metric %q to be collected", name)
 		}
+	}
+}
+
+func TestDefaultSpanLimits_PreservesAttributeValues(t *testing.T) {
+	limits := defaultSpanLimits()
+	if limits.AttributeValueLengthLimit != defaultAttributeValueLengthLimit {
+		t.Fatalf("AttributeValueLengthLimit = %d, want %d", limits.AttributeValueLengthLimit, defaultAttributeValueLengthLimit)
+	}
+	if limits.AttributeCountLimit <= 0 || limits.AttributePerEventCountLimit <= 0 {
+		t.Fatalf("expected positive attribute count limits, got %+v", limits)
+	}
+
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(recorder),
+		sdktrace.WithRawSpanLimits(limits),
+	)
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	_, span := tp.Tracer("test-tracer").Start(context.Background(), "DB SELECT")
+	span.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "SELECT"),
+		attribute.String("db.statement", "SELECT 1"),
+	)
+	span.End()
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+
+	got := make(map[string]string, len(spans[0].Attributes()))
+	for _, attr := range spans[0].Attributes() {
+		got[string(attr.Key)] = attr.Value.AsString()
+	}
+
+	if got["db.system"] != "postgresql" {
+		t.Errorf("db.system = %q, want %q", got["db.system"], "postgresql")
+	}
+	if got["db.operation"] != "SELECT" {
+		t.Errorf("db.operation = %q, want %q", got["db.operation"], "SELECT")
+	}
+	if got["db.statement"] != "SELECT 1" {
+		t.Errorf("db.statement = %q, want %q", got["db.statement"], "SELECT 1")
 	}
 }
